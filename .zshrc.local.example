@@ -1,0 +1,16 @@
+# Optional local paths. Copy only the entries needed on this machine.
+# This file is ordinary trusted shell code; keep secrets out of it.
+case $OSTYPE in
+    darwin*)
+        if [[ -d /opt/homebrew/bin ]]; then
+            path+=(/opt/homebrew/bin /opt/homebrew/sbin)
+            fpath+=(/opt/homebrew/share/zsh/site-functions)
+        elif [[ -d /usr/local/Homebrew ]]; then
+            path+=(/usr/local/bin /usr/local/sbin)
+            fpath+=(/usr/local/share/zsh/site-functions)
+        fi
+        path+=("$HOME/.jetbrains" "$HOME/.jbcontext/bin")
+        ;;
+esac
+# Keep while Rust tools installed with cargo are in use.
+[[ ! -d $HOME/.cargo/bin ]] || path+=("$HOME/.cargo/bin")

@@ -1,0 +1,26 @@
+min_version = "2026.9.1"
+
+[settings]
+auto_install = false
+not_found_auto_install = false
+not_found_system_fallback = false
+pin = true
+
+[tools]
+# Shell integrations, with one prompt owner.
+starship = "1.26.0"
+atuin = "18.10.0"
+zoxide = "0.10.0"
+worktrunk = "0.53.0"
+
+# Small toolbox for Developer Tools workflows.
+ripgrep = "15.2.0"
+fd = "10.3.0"
+jq = "1.8.2"
+fzf = "0.74.3"
+gh = "2.100.0"
+uv = "0.12.9"
+
+# Match the currently selected local runtime versions. Repositories may override.
+java = "temurin-25.0.2+10.0.LTS"
+node = "26.0.0"

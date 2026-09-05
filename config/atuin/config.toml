@@ -1,0 +1,8 @@
+# Ctrl-R selects into the command line for editing; Enter there executes it.
+enter_accept = false
+secrets_filter = true
+auto_sync = false
+update_check = false
+
+[sync]
+records = true
