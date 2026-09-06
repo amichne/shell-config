@@ -1,0 +1,3 @@
+#!/bin/sh
+# Installed independently of shell startup; authentication stays with the harness.
+exec node "${AI_RUNTIME_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/shell-config/ai}/main.mjs" "$@"
