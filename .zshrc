@@ -65,3 +65,4 @@ eval "$_shell_init" || return
 
 unset _shell_init _shell_tool
 typeset -g _SHELL_CONFIG_LOADED=1
+eval "$(/Users/amichne/.local/bin/mise activate zsh)"

@@ -3,8 +3,10 @@ set -eu
 
 usage() {
     cat <<'USAGE'
-Usage: ./install.sh <activate|restore|toggle|status>
+Usage: ./install.sh <plan|migrate|activate|restore|toggle|status>
 
+plan      Preview locked tool provisioning and every managed path without changing them.
+migrate   Install the locked toolchain, then perform the reversible activation.
 activate  Snapshot the current config and symlink managed files to this checkout.
 restore   Restore the exact pre-activation files from the latest snapshot.
 toggle    Restore when active; activate when inactive.
@@ -31,7 +33,7 @@ reject_multiline() {
     esac
 }
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 repo_root=$script_dir
 : "${HOME:?HOME must be set}"
 zdotdir=${ZDOTDIR:-$HOME}
@@ -119,10 +121,56 @@ validate_sources() {
         source=$(source_for "$id")
         target=$(target_for "$id")
         [ -f "$source" ] || fail "missing repository source: $source"
-        if [ -e "$target" ] && [ -d "$target" ] && [ ! -L "$target" ]; then
-            fail "managed file target is a directory: $target"
+        [ "$source" != "$target" ] || fail "repository source is also its managed target: $target"
+        if [ -e "$target" ] && [ ! -f "$target" ] && [ ! -L "$target" ]; then
+            fail "managed target has an unsupported file type: $target"
         fi
     done
+}
+
+install_locked_tools() {
+    mode=$1
+    command -v mise >/dev/null 2>&1 || fail "mise is missing; install mise 2026.9.1 or newer first"
+    (
+        cd "$repo_root"
+        unset MISE_CONFIG_FILE MISE_ENV
+        MISE_GLOBAL_CONFIG_FILE="$repo_root/config/mise/config.toml"
+        export MISE_GLOBAL_CONFIG_FILE
+        case "$mode" in
+            apply) mise install --locked ;;
+            preview) mise install --locked --dry-run ;;
+            *) fail "unknown provisioning mode: $mode" ;;
+        esac
+    )
+}
+
+plan() {
+    if [ -e "$active" ]; then
+        status
+        printf 'shell-config: no migration changes are needed\n'
+        return 0
+    fi
+
+    validate_sources
+    printf 'shell-config: would provision locked tools from %s\n' "$repo_root/config/mise/config.toml"
+    install_locked_tools preview
+    use_current_paths
+    for id in $ids; do
+        printf 'shell-config: would link %s -> %s\n' "$(target_for "$id")" "$(source_for "$id")"
+    done
+    printf 'shell-config: would retain the prior files in %s\n' "$snapshot"
+}
+
+migrate() {
+    if [ -e "$active" ]; then
+        activate
+        return 0
+    fi
+
+    validate_sources
+    printf 'shell-config: provisioning locked tools\n'
+    install_locked_tools apply
+    activate
 }
 
 snapshot_current() {
@@ -167,6 +215,16 @@ rollback_current_from() {
     done
 }
 
+rollback_failed_activation() {
+    exit_code=$?
+    trap - HUP INT TERM EXIT
+    if [ "${cleanup_next:-0}" -eq 1 ]; then
+        rollback_current_from "$next" || true
+        rm -rf "$next"
+    fi
+    exit "$exit_code"
+}
+
 activate() {
     if [ -e "$active" ]; then
         load_snapshot_metadata
@@ -180,7 +238,7 @@ activate() {
     mkdir -p "$state_dir"
     next=$(snapshot_current)
     cleanup_next=1
-    trap 'code=$?; if [ ${cleanup_next:-0} -eq 1 ]; then rollback_current_from "$next" || true; rm -rf "$next"; fi; exit $code' HUP INT TERM EXIT
+    trap rollback_failed_activation HUP INT TERM EXIT
 
     use_current_paths
     for id in $ids; do
@@ -255,6 +313,8 @@ status() {
 
 command=${1:-status}
 case "$command" in
+    plan) [ "$#" -eq 1 ] || fail "plan takes no arguments"; plan ;;
+    migrate) [ "$#" -eq 1 ] || fail "migrate takes no arguments"; migrate ;;
     activate) [ "$#" -eq 1 ] || fail "activate takes no arguments"; activate ;;
     restore) [ "$#" -eq 1 ] || fail "restore takes no arguments"; restore ;;
     toggle)

@@ -152,7 +152,23 @@ automation should use bounded commands and structured output, without `fzf`.
   explicitly when needed. History databases, encryption keys, and login state
   are not deployed or replaced.
 
-## Provision and migrate
+## Try the setup with a reversible cutover
+
+After installing mise 2026.9.1 or newer, preview every managed path and the
+locked tool installation, then migrate in one command:
+
+```sh
+./install.sh plan
+./install.sh migrate
+```
+
+`migrate` provisions the locked tools before it snapshots and activates the
+repository configuration. If provisioning fails, it does not replace the shell
+startup files. Use `./install.sh restore` to return to the exact pre-activation
+files, then open a fresh terminal. See [docs/cutover.md](docs/cutover.md) for the
+managed paths, drift behavior, and recovery contract.
+
+## Permanent plain-file migration
 
 1. Install mise 2026.9.1 or newer using its
    [official installation instructions](https://mise.jdx.dev/installing-mise.html).

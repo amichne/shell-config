@@ -7,14 +7,22 @@ machine state remains independently recoverable.
 
 ```sh
 ./install.sh status
-./install.sh activate
+./install.sh plan
+./install.sh migrate
 # Open a fresh terminal and evaluate the repository configuration.
 ./install.sh restore
 # Open a fresh terminal and you are back on the previous configuration.
 ```
 
-`./install.sh toggle` performs whichever transition is needed. `activate` and
-`restore` are idempotent when already in their requested state.
+`plan` runs mise's locked installation preview and lists every path the cutover
+would manage. It does not create a snapshot or change a managed path. `migrate`
+installs the versions in `config/mise/mise.lock`, then activates the checkout.
+If tool provisioning fails, the shell configuration is not activated.
+
+`activate` is the lower-level cutover for a toolchain that was provisioned
+separately. `toggle` restores when active and runs that lower-level activation
+when inactive. `migrate`, `activate`, and `restore` are idempotent when already
+in their requested state.
 
 ## Invariant
 
@@ -65,10 +73,13 @@ portable recursive/preserve fallback. It preserves ordinary file contents,
 permissions, timestamps, directories, and symlinks; this is not an archival
 contract for every filesystem-specific ACL or extended attribute.
 
-The script does not install mise, download locked tools, authenticate AI
-harnesses, or start a new shell. Provision prerequisites first. A new terminal is
-required after either shell cutover because the currently running process has
-already evaluated its startup files and environment.
+The script does not bootstrap mise, authenticate AI harnesses, or start a new
+shell. `migrate` requires mise 2026.9.1 or newer and sets the repository config
+as mise's global configuration while installing. A failed installation can
+leave successfully downloaded tools in mise's data directory, but it does not
+start the shell cutover. A new terminal is required after either shell cutover
+because the currently running process has already evaluated its startup files
+and environment.
 
 ## Why symlinks for cutover
 
@@ -87,5 +98,6 @@ python3 tests/install-cutover.py
 ```
 
 It covers paths containing spaces, ZDOTDIR, existing regular files, existing
-symlinks, absent files, file modes, activation, restoration, repeated toggles,
-and fail-closed drift detection. It never reads or modifies the real home.
+symlinks, absent files, file modes, non-mutating planning, locked provisioning,
+one-shot migration, restoration, repeated toggles, and fail-closed drift
+detection. It never reads or modifies the real home.

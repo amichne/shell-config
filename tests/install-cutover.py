@@ -13,13 +13,14 @@ SOURCE = Path(__file__).resolve().parents[1]
 def main():
     with tempfile.TemporaryDirectory(prefix="shell cutover with spaces ") as temp:
         root = Path(temp)
-        repo = root / "repo"
+        repo = (root / "repo").resolve()
         home = root / "home"
         zdot = root / "z dot"
         config = root / "config"
         data = root / "data"
         state = root / "state"
-        for directory in (repo, home, zdot, config, data, state):
+        tool_bin = root / "tool bin"
+        for directory in (repo, home, zdot, config, data, state, tool_bin):
             directory.mkdir()
 
         shutil.copy2(SOURCE / "install.sh", repo / "install.sh")
@@ -47,6 +48,18 @@ def main():
         external = root / "external-starship.toml"
         external.write_text("original-starship\n")
         (config / "starship.toml").symlink_to(external)
+        mise_log = root / "mise.log"
+        fake_mise = tool_bin / "mise"
+        fake_mise.write_text("""#!/bin/sh
+set -eu
+printf 'config=%s\\n' "${MISE_GLOBAL_CONFIG_FILE-}" >> "$MISE_LOG"
+printf 'cwd=%s\\n' "$PWD" >> "$MISE_LOG"
+printf 'args=' >> "$MISE_LOG"
+printf '%s|' "$@" >> "$MISE_LOG"
+printf '\\n' >> "$MISE_LOG"
+[ ! -e "$MISE_FAIL_FILE" ] || exit 42
+""")
+        fake_mise.chmod(0o755)
 
         env = {
             **os.environ,
@@ -55,6 +68,9 @@ def main():
             "XDG_CONFIG_HOME": str(config),
             "XDG_DATA_HOME": str(data),
             "XDG_STATE_HOME": str(state),
+            "MISE_FAIL_FILE": str(root / "mise.fail"),
+            "MISE_LOG": str(mise_log),
+            "PATH": f"{tool_bin}{os.pathsep}{os.environ['PATH']}",
         }
 
         def run(*args, expected=0):
@@ -70,13 +86,41 @@ def main():
 
         subprocess.run(["sh", "-n", str(repo / "install.sh")], check=True)
         assert "no snapshot" in run("status").stdout
-        run("activate")
+        before_plan = {
+            path: (path.is_symlink(), os.readlink(path) if path.is_symlink() else path.read_bytes())
+            for path in (zdot / ".zshrc", config / "mise/config.toml", config / "starship.toml")
+        }
+        assert "would provision locked tools" in run("plan").stdout
+        after_plan = {
+            path: (path.is_symlink(), os.readlink(path) if path.is_symlink() else path.read_bytes())
+            for path in before_plan
+        }
+        assert after_plan == before_plan, "plan changed a managed target"
+        assert not (state / "shell-config-cutover/snapshot").exists()
+
+        Path(env["MISE_FAIL_FILE"]).touch()
+        run("migrate", expected=42)
+        assert after_plan == {
+            path: (path.is_symlink(), os.readlink(path) if path.is_symlink() else path.read_bytes())
+            for path in before_plan
+        }, "failed provisioning changed a managed target"
+        assert not (state / "shell-config-cutover/snapshot").exists()
+        Path(env["MISE_FAIL_FILE"]).unlink()
+
+        run("migrate")
         assert (zdot / ".zshrc").is_symlink()
         assert os.readlink(zdot / ".zshrc") == str(repo / ".zshrc")
         assert not (home / ".zshrc").exists(), "ZDOTDIR was ignored"
         assert (config / "ai/config.json").is_symlink()
         assert (home / ".local/bin/ai").is_symlink()
         assert "active from" in run("status").stdout
+        log_after_migrate = mise_log.read_text()
+        assert f"config={repo / 'config/mise/config.toml'}" in log_after_migrate
+        assert f"cwd={repo}" in log_after_migrate
+        assert "args=install|--locked|--dry-run|" in log_after_migrate
+        assert "args=install|--locked|" in log_after_migrate
+        assert "already active" in run("migrate").stdout
+        assert mise_log.read_text() == log_after_migrate, "idempotent migration reprovisioned tools"
 
         # Restore validates the entire managed surface before changing anything.
         (zdot / ".zshrc").unlink()
