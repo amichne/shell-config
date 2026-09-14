@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+runtime_dir=${SHELL_PROMPT_RUNTIME_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/shell-config/prompt}
+exec node "$runtime_dir/server.mjs"

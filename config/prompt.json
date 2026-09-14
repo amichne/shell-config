@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "lines": 2,
+  "frame": "none",
+  "marker": "$",
+  "pathDepth": 3,
+  "blankLine": true,
+  "duration": true,
+  "exitStatus": true,
+  "durationMs": 1500,
+  "branch": true,
+  "remote": true,
+  "sync": true,
+  "changes": true,
+  "clean": true,
+  "worktree": true,
+  "pr": true,
+  "labels": "compact",
+  "colors": {
+    "directory": "#3a83f7",
+    "git": "#bd93f9",
+    "muted": "#9296ad",
+    "success": "#50fa7b",
+    "error": "#ff5555",
+    "background": "#282a36"
+  }
+}
