@@ -66,8 +66,8 @@ zstyle ':completion:*' verbose yes
 zstyle ':completion:*' squeeze-slashes true
 zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
 
-alias ls='eza --smart-group --group-directories-first --icons=automatic'
-alias l='eza --smart-group --group-directories-first --icons=automatic --all'
+alias ls='eza --smart-group --group-directories-first --icons=auto'
+alias l='eza --smart-group --group-directories-first --icons=auto --all'
 alias zs='exec zsh -l'
 alias main='wt switch "^"'
 rr() {

@@ -75,7 +75,7 @@ shell integration would break automatic directory changes.
 | --- | --- |
 | Login PATH | `.zprofile`, mise shims, and local `.zshpath` capture |
 | Interactive options, completion, highlighting, suggestions, shortcuts | `.zshrc` |
-| Tool versions and binary download locations | `config/mise/config.toml` and `mise.lock` |
+| Tool versions | Exact pins in `config/mise/config.toml` |
 | Prompt | `config/starship.toml` |
 | History behavior | `config/atuin/config.toml` |
 | Machine-specific launcher paths | Captured `.zshpath`; optional `.zshrc.local` additions |
@@ -85,13 +85,15 @@ shell integration would break automatic directory changes.
 | Authentication, identities, agent settings | Each application's existing local storage |
 
 The four shortcuts are `l`, `zs`, `main`, and `f`; `rr` is a small directory
-function. No standard executable is replaced. Shell integrations use native initialization output from mise, zoxide, Worktrunk,
+function. `ls` and `l` intentionally use eza. Shell integrations use native initialization output from mise, zoxide, Worktrunk,
 fzf, Atuin, and Starship, plus the zsh-users highlighting and suggestion scripts.
 
 Support targets are Zsh on macOS and glibc-based Linux, on ARM64 and x86-64.
-The lockfile contains URLs and SHA-256 checksums for all 13 tools on all four
-targets. macOS ARM64 installation and behavior were exercised locally. Other
-targets have lockfile coverage, not runtime proof. Windows and Bash are outside
+The configuration pins all 14 tool versions but lets mise select compatible
+artifacts for the machine at install time. This avoids carrying platform URLs
+and checksums that can reject an otherwise compatible environment. macOS ARM64
+installation and behavior were exercised locally; Linux and Intel macOS remain
+declared support targets without runtime proof. Windows and Bash are outside
 this draft. No Nerd Font is required by the prompt.
 
 Self-contained means these files do not source Apollo, dotfiles, a Codex plugin,
@@ -116,7 +118,7 @@ complexity this migration removes.
 | Read structured JSON | `jq '.field' file.json` |
 | Select interactively | `fd --type f --print0 \| fzf --read0 --print0` |
 | Inspect tool selection | `mise ls`, `mise which java`, `mise doctor` |
-| Run a reproducible build | `mise install --locked && mise exec -- ./gradlew test` |
+| Run with pinned tools | `mise install && mise exec -- ./gradlew test` |
 | Switch worktrees | `wt switch`, `wt switch '^'`, `wt switch -` |
 | Install a Python application temporarily | `uvx <package>` |
 
@@ -127,8 +129,8 @@ automation should use bounded commands and structured output, without `fzf`.
 
 ## Deliberate behavior changes
 
-- `l` runs standard `ls -lah`. `ls` itself is untouched; lsd's icons and grouping
-  are not retained.
+- `ls` runs `eza --smart-group --group-directories-first --icons=auto`.
+  `l` uses the same layout and adds `--all`.
 - `main` runs `wt switch '^'`. It navigates to the default-branch worktree and
   does not fetch or pull. Fetch explicitly when freshness is required.
 - `zs` runs `exec zsh -l`. It starts a fresh shell; check for active jobs first.
@@ -189,7 +191,7 @@ PATH you want to preserve:
 `--shell-only` leaves the AI command and configuration alone. Omit it when
 migrating the complete repository, including AI.
 
-`migrate` provisions the locked tools before it snapshots and activates the
+`migrate` provisions the pinned tools before it snapshots and activates the
 repository configuration. If provisioning fails, it does not replace the shell
 startup files. Use `./install.sh restore` to return to the exact pre-activation
 files, then open a fresh terminal. See [docs/cutover.md](docs/cutover.md) for the
@@ -218,10 +220,10 @@ managed paths, drift behavior, and recovery contract.
    ```sh
    mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/mise"
    install -m 600 config/mise/config.toml "${XDG_CONFIG_HOME:-$HOME/.config}/mise/config.toml"
-   install -m 600 config/mise/mise.lock "${XDG_CONFIG_HOME:-$HOME/.config}/mise/mise.lock"
+   rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/mise/mise.lock"
    ```
 
-4. Run `mise install --locked` from a directory outside any project. Inspect
+4. Run `mise install` from a directory outside any project. Inspect
    `mise config ls` first so project configurations do not join the installation.
    Do not continue if installation fails. No global Gradle install is needed.
 5. Copy the remaining files only after successful installation:
@@ -260,7 +262,7 @@ The global Java and Node pins match the inspected local selection, Temurin
 25.0.2 and Node 26.0.0. These are continuity defaults, not an assertion that
 every repository supports them. In each repository, inspect its declared JDK
 and Node requirements before using `mise use --pin` to write project pins.
-Then generate `mise.lock` for its actual CI and developer platforms.
+Project lockfiles remain a per-repository choice when artifact identity matters.
 
 Keep Gradle's wrapper. A mise task may invoke `./gradlew test`, but should not
 reimplement Gradle's dependencies or caching. Prefer mise to own Python
@@ -268,10 +270,10 @@ interpreters and uv to own virtual environments and Python packages. Keep
 Rustup until repositories' `rust-toolchain.toml`, target, and component needs
 are explicitly accounted for. Consolidation should not break those contracts.
 
-Use `mise outdated` to review updates. Change exact pins deliberately and run
-`mise lock --global --platform macos-arm64,macos-x64,linux-x64,linux-arm64`
-before `mise install --locked`. Copy the resulting native config and lockfile
-back to this directory for version control. No scheduled updater is required.
+Use `mise outdated` to review updates. Change exact pins deliberately, test the
+new versions on the environments you use, and run `mise install`. This shell
+configuration intentionally has no `mise.lock`; backend and artifact selection
+remain platform-aware. No scheduled updater is required.
 
 With `auto_install = false`, mise 2026.9.1 can warn about a missing tool in
 `mise exec` and then execute another binary already on PATH. Do not treat
@@ -293,7 +295,7 @@ in its path. Supply a disposable mise installation containing these pins:
 python3 check.py --mise /path/to/mise --data-dir /path/to/disposable/mise/data
 ```
 
-It checks lock/config agreement and checksums for four platforms, noninteractive
+It checks exact version pins, noninteractive
 silence, login shims, Node/Java versions and `JAVA_HOME`, missing-tool failure with usable completion, preserved/retired PATH entries,
 exit-code propagation, repeated sourcing, preservation of an existing hook,
 Atuin/fzf bindings, actual PTY typing and Tab completion, suggestion acceptance,
@@ -307,7 +309,7 @@ published in its release checksum file. Linux and Intel macOS execution remain
 unverified. This directory contains no installed binaries or live state.
 
 References: [mise configuration](https://mise.jdx.dev/configuration.html),
-[lockfiles](https://mise.jdx.dev/dev-tools/mise-lock.html),
+[backends](https://mise.jdx.dev/dev-tools/backends/),
 [settings](https://mise.jdx.dev/configuration/settings.html),
 [Java](https://mise.jdx.dev/lang/java.html),
 [Starship setup](https://starship.rs/guide/),

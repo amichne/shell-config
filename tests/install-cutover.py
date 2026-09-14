@@ -26,7 +26,7 @@ def main():
         shutil.copy2(SOURCE / "install.sh", repo / "install.sh")
         sources = (
             ".zshrc", ".zprofile", "config/mise/config.toml",
-            "config/mise/mise.lock", "config/starship.toml",
+            "config/starship.toml",
             "config/atuin/config.toml", "config/ai/config.json", "bin/ai",
             "ai/core.mjs", "ai/config.mjs", "ai/main.mjs", "ai/ui.mjs",
             "bin/shell-prompt", "bin/prompt-editor", "prompt/context.mjs",
@@ -42,6 +42,7 @@ def main():
         (zdot / ".zshpath").write_text("original-path-data\n")
         (config / "mise").mkdir()
         (config / "mise/config.toml").write_text("original-mise\n")
+        (config / "mise/mise.lock").write_text("original-lock\n")
         (config / "ai").mkdir()
         (config / "ai/config.json").write_text("original-ai\n")
         (config / "ai/config.json").chmod(0o600)
@@ -93,7 +94,9 @@ printf '\\n' >> "$MISE_LOG"
             path: (path.is_symlink(), os.readlink(path) if path.is_symlink() else path.read_bytes())
             for path in (zdot / ".zshrc", config / "mise/config.toml", config / "starship.toml")
         }
-        assert "would provision locked tools" in run("plan").stdout
+        plan = run("plan").stdout
+        assert "would provision pinned tools" in plan
+        assert "would remove obsolete lockfile" in plan
         after_plan = {
             path: (path.is_symlink(), os.readlink(path) if path.is_symlink() else path.read_bytes())
             for path in before_plan
@@ -115,6 +118,7 @@ printf '\\n' >> "$MISE_LOG"
         assert os.readlink(zdot / ".zshrc") == str(repo / ".zshrc")
         assert not (home / ".zshrc").exists(), "ZDOTDIR was ignored"
         assert (config / "ai/config.json").is_symlink()
+        assert not (config / "mise/mise.lock").exists()
         assert (zdot / ".zshpath").is_symlink()
         assert (zdot / ".zshpath").read_text() == env["PATH"] + "\n"
         assert (zdot / ".zshpath").stat().st_mode & 0o777 == 0o600
@@ -123,8 +127,8 @@ printf '\\n' >> "$MISE_LOG"
         log_after_migrate = mise_log.read_text()
         assert f"config={repo / 'config/mise/config.toml'}" in log_after_migrate
         assert f"cwd={repo}" in log_after_migrate
-        assert "args=install|--locked|--dry-run|" in log_after_migrate
-        assert "args=install|--locked|" in log_after_migrate
+        assert "args=install|--dry-run|" in log_after_migrate
+        assert "args=install|\n" in log_after_migrate
         assert "already active" in run("migrate").stdout
         assert mise_log.read_text() == log_after_migrate, "idempotent migration reprovisioned tools"
 
@@ -142,6 +146,7 @@ printf '\\n' >> "$MISE_LOG"
         assert (zdot / ".zshpath").read_text() == "original-path-data\n"
         assert not (zdot / ".zprofile").exists(), "original absence was not restored"
         assert (config / "mise/config.toml").read_text() == "original-mise\n"
+        assert (config / "mise/mise.lock").read_text() == "original-lock\n"
         assert (config / "ai/config.json").read_text() == "original-ai\n"
         assert (config / "ai/config.json").stat().st_mode & 0o777 == 0o600
         assert old_core.read_text() == "original-core\n"
@@ -160,11 +165,16 @@ printf '\\n' >> "$MISE_LOG"
         # Preserve support for restoring a pre-PATH-capture (version 1) cutover.
         run("activate")
         snapshot = state / "shell-config-cutover/snapshot"
+        assert (snapshot / "version").read_text() == "4\n"
+        legacy_lock = repo / "config/mise/mise.lock"
+        legacy_lock.write_text("legacy-repository-lock\n")
+        (config / "mise/mise.lock").symlink_to(legacy_lock)
         (snapshot / "version").write_text("1\n")
         (zdot / ".zshpath").unlink()
         (zdot / ".zshpath").write_text("v1-unmanaged-path\n")
         run("restore")
         assert (zdot / ".zshpath").read_text() == "v1-unmanaged-path\n"
+        assert (config / "mise/mise.lock").read_text() == "original-lock\n"
 
         # Shell iteration must not replace an unrelated AI configuration.
         assert 'config/ai/config.json' not in run('plan', '--shell-only').stdout

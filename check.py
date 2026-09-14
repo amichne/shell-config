@@ -114,15 +114,11 @@ def main():
     if not zsh or not git:
         parser.error("Zsh and Git are prerequisites")
     config = tomllib.loads((source / "config/mise/config.toml").read_text())
-    lock = tomllib.loads((source / "config/mise/mise.lock").read_text())
-    assert set(lock["tools"]) == set(config["tools"]), "lock/config tool mismatch"
+    exact_pin = re.compile(r"^(?:[A-Za-z][A-Za-z0-9._-]*-)?\d+\.\d+\.\d+(?:[+.-][A-Za-z0-9.]+)*$")
     for name, version in config["tools"].items():
-        entries = lock["tools"][name]
-        assert len(entries) == 1 and entries[0]["version"] == version, name
-        for platform in ("macos-arm64", "macos-x64", "linux-arm64", "linux-x64"):
-            entry = entries[0]["platforms." + platform]
-            assert entry["url"].startswith("https://"), (name, platform)
-            assert entry["checksum"].startswith("sha256:"), (name, platform)
+        assert isinstance(version, str) and exact_pin.fullmatch(version), (name, version)
+    assert config["settings"]["auto_install"] is False
+    assert config["settings"]["not_found_system_fallback"] is False
     for file in (source / "config").rglob("*.toml"):
         tomllib.loads(file.read_text())
 
@@ -183,8 +179,9 @@ def main():
         assert not (root / 'UNEXPECTED').exists(), 'PATH data was executed'
         run([str(mise), "exec", "--", "sh", "-c", "exit 37"], expected=37)
         versions = run([str(mise), "exec", "--", "sh", "-c",
-                        'node --version && java -version && test -x "$JAVA_HOME/bin/java"'])
-        assert "v26.0.0" in versions.stdout and '"25.0.2"' in versions.stderr
+                        'node --version && java -version && test -x "$JAVA_HOME/bin/java" && eza --version'])
+        assert "v26.0.0" in versions.stdout and "v0.23.5" in versions.stdout
+        assert '"25.0.2"' in versions.stderr
         kotlin = run([str(mise), 'exec', '--', 'kotlinc', '-version'])
         assert '2.1.21' in kotlin.stderr, kotlin.stderr
         config_path = root / "config/mise/config.toml"
@@ -223,8 +220,8 @@ source "$HOME/.zshrc" || exit
 [[ $(bindkey '^R') == *atuin* ]] || exit 25
 [[ $(bindkey '^[[A') != *atuin* ]] || exit 26
 (( ! $+functions[git] && ! $+functions[rmdir] )) || exit 27
-[[ ${aliases[ls]} == 'eza --smart-group --group-directories-first --icons=automatic' ]] || exit 43
-[[ ${aliases[l]} == 'eza --smart-group --group-directories-first --icons=automatic --all' ]] || exit 44
+[[ ${aliases[ls]} == 'eza --smart-group --group-directories-first --icons=auto' ]] || exit 43
+[[ ${aliases[l]} == 'eza --smart-group --group-directories-first --icons=auto --all' ]] || exit 44
 [[ -z ${GITHUB_PERSONAL_ACCESS_TOKEN-}${CODEX_GITHUB_PERSONAL_ACCESS_TOKEN-} ]] || exit 28
 root=$PWD
 cd -- 'sub directory' || exit
@@ -238,7 +235,11 @@ f > /dev/null 2>&1
 wt switch --create fixture --no-hooks > /dev/null || exit
 [[ $PWD != $root ]] || exit 32
 [[ $(git branch --show-current) == fixture ]] || exit 33
-[[ $(shell-prompt context --json) == *'"kind":"repository"'* ]] || exit 39
+prompt_context=$(shell-prompt context --json) || exit 39
+[[ $prompt_context == *'"kind":"repository"'* ]] || {
+    print -u2 -- "stage=prompt-context outcome=unexpected value=${prompt_context[1,160]}"
+    exit 39
+}
 starship prompt --status=1 > /dev/null || exit
 print -- CHECKS_OK
 '''
@@ -262,9 +263,9 @@ source "$HOME/.zshrc"
 '''])
         assert degraded.stderr.count('stage=mise outcome=missing-command') == 1
 
-    print(json.dumps({"result": "passed", "locked_tools": len(config["tools"]),
-                      "lock_platforms": 4, "runtime_platform": os.uname().sysname,
-                      "checks": ["TOML and lock agreement", "noninteractive silence",
+    print(json.dumps({"result": "passed", "pinned_tools": len(config["tools"]),
+                      "runtime_platform": os.uname().sysname,
+                      "checks": ["exact version pins", "noninteractive silence",
                                  "exit propagation", "runtime versions and JAVA_HOME",
                                  "missing dependency failure", "repeated sourcing",
                                  "existing hook preservation", "Atuin key bindings",

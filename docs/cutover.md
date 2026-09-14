@@ -14,9 +14,9 @@ machine state remains independently recoverable.
 # Open a fresh terminal and you are back on the previous configuration.
 ```
 
-`plan` runs mise's locked installation preview and lists every path the cutover
+`plan` runs mise's version-pinned installation preview and lists every path the cutover
 would manage. It does not create a snapshot or change a managed path. `migrate`
-installs the versions in `config/mise/mise.lock`, then activates the checkout.
+installs the exact versions in `config/mise/config.toml`, then activates the checkout.
 If tool provisioning fails, the shell configuration is not activated.
 
 `activate` is the lower-level cutover for a toolchain that was provisioned
@@ -50,6 +50,10 @@ By default, the installer manages:
 `--shell-only` limits plan/migrate/activate to the startup files, PATH data, mise,
 Starship, and Atuin. The snapshot records this scope, so restore/status need no
 flag. Restore before switching the scope of an active cutover.
+
+Activation snapshots and removes any existing global `mise.lock`. The exact
+version pins remain in `config.toml`, while mise chooses the compatible backend
+artifact for the current platform. Restore puts the prior lockfile back exactly.
 
 It deliberately does **not** manage `.zshrc.local`, application credentials,
 Vim/Git/IDE configuration, shell history databases, or any existing agent login
@@ -108,6 +112,6 @@ python3 tests/install-cutover.py
 ```
 
 It covers paths containing spaces, ZDOTDIR, existing regular files, existing
-symlinks, absent files, file modes, non-mutating planning, locked provisioning,
+symlinks, absent files, file modes, non-mutating planning, pinned provisioning,
 one-shot migration, restoration, repeated toggles, and fail-closed drift
 detection. It never reads or modifies the real home.

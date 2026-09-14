@@ -8,8 +8,8 @@ Usage: ./install.sh <plan|migrate|activate|restore|toggle|status> [--shell-only]
 --shell-only is supported by plan, migrate, and activate; it leaves AI files alone.
 Restore and status use the scope recorded in the snapshot.
 
-plan      Preview locked tool provisioning and every managed path without changing them.
-migrate   Install the locked toolchain, then perform the reversible activation.
+plan      Preview version-pinned tool provisioning and every managed path without changing them.
+migrate   Install the pinned toolchain, then perform the reversible activation.
 activate  Snapshot the current config and symlink managed files to this checkout.
 restore   Restore the exact pre-activation files from the latest snapshot.
 toggle    Restore when active; activate when inactive.
@@ -52,6 +52,7 @@ legacy_shell_ids='zshrc zprofile mise-config mise-lock starship atuin'
 base_ids="$legacy_base_ids prompt-bin prompt-editor-bin prompt-context prompt-model prompt-server prompt-editor"
 shell_ids="$legacy_shell_ids prompt-bin prompt-editor-bin prompt-context prompt-model prompt-server prompt-editor"
 cutover_scope=all
+layout_version=4
 ids="$base_ids saved-path"
 
 for value in "$repo_root" "$HOME" "$zdotdir" "$xdg_config" "$xdg_data" "$state_dir"; do
@@ -118,7 +119,8 @@ use_current_paths() {
 
 load_snapshot_metadata() {
     [ -d "$snapshot" ] || fail "no cutover snapshot exists"
-    case "$(cat "$snapshot/version" 2>/dev/null || true)" in
+    layout_version=$(cat "$snapshot/version" 2>/dev/null || true)
+    case "$layout_version" in
         1) cutover_scope=all; ids=$legacy_base_ids ;;
         2)
             cutover_scope=$(cat "$snapshot/scope")
@@ -128,7 +130,7 @@ load_snapshot_metadata() {
                 *) fail "unsupported snapshot scope: $cutover_scope" ;;
             esac
             ;;
-        3)
+        3|4)
             cutover_scope=$(cat "$snapshot/scope")
             case "$cutover_scope" in all|shell) : ;; *) fail "unsupported snapshot scope: $cutover_scope" ;; esac
             ids=$(cat "$snapshot/ids")
@@ -157,19 +159,19 @@ use_snapshot_paths() {
 validate_sources() {
     use_current_paths
     for id in $ids; do
-        source=$(source_for "$id")
         target=$(target_for "$id")
-        if [ "$id" != saved-path ]; then
+        if [ "$id" != saved-path ] && ! { [ "$layout_version" = 4 ] && [ "$id" = mise-lock ]; }; then
+            source=$(source_for "$id")
             [ -f "$source" ] || fail "missing repository source: $source"
+            [ "$source" != "$target" ] || fail "repository source is also its managed target: $target"
         fi
-        [ "$source" != "$target" ] || fail "repository source is also its managed target: $target"
         if [ -e "$target" ] && [ ! -f "$target" ] && [ ! -L "$target" ]; then
             fail "managed target has an unsupported file type: $target"
         fi
     done
 }
 
-install_locked_tools() {
+install_pinned_tools() {
     mode=$1
     command -v mise >/dev/null 2>&1 || fail "mise is missing; install mise 2026.9.1 or newer first"
     (
@@ -178,8 +180,8 @@ install_locked_tools() {
         MISE_GLOBAL_CONFIG_FILE="$repo_root/config/mise/config.toml"
         export MISE_GLOBAL_CONFIG_FILE
         case "$mode" in
-            apply) mise install --locked ;;
-            preview) mise install --locked --dry-run ;;
+            apply) mise install ;;
+            preview) mise install --dry-run ;;
             *) fail "unknown provisioning mode: $mode" ;;
         esac
     )
@@ -194,11 +196,15 @@ plan() {
 
     validate_sources
     reject_multiline "$PATH" PATH
-    printf 'shell-config: would provision locked tools from %s\n' "$repo_root/config/mise/config.toml"
-    install_locked_tools preview
+    printf 'shell-config: would provision pinned tools from %s\n' "$repo_root/config/mise/config.toml"
+    install_pinned_tools preview
     use_current_paths
     for id in $ids; do
-        printf 'shell-config: would link %s -> %s\n' "$(target_for "$id")" "$(source_for "$id")"
+        if [ "$layout_version" = 4 ] && [ "$id" = mise-lock ]; then
+            printf 'shell-config: would remove obsolete lockfile %s\n' "$(target_for "$id")"
+        else
+            printf 'shell-config: would link %s -> %s\n' "$(target_for "$id")" "$(source_for "$id")"
+        fi
     done
     printf 'shell-config: would retain the prior files in %s\n' "$snapshot"
     printf 'shell-config: would preserve the invoking shell PATH in the local snapshot\n'
@@ -211,8 +217,8 @@ migrate() {
     fi
 
     validate_sources
-    printf 'shell-config: provisioning locked tools\n'
-    install_locked_tools apply
+    printf 'shell-config: provisioning pinned tools\n'
+    install_pinned_tools apply
     activate
 }
 
@@ -220,7 +226,7 @@ snapshot_current() {
     next=$state_dir/snapshot.next.$$
     rm -rf "$next"
     mkdir -p "$next/items"
-    printf '3\n' > "$next/version"
+    printf '%s\n' "$layout_version" > "$next/version"
     printf '%s\n' "$cutover_scope" > "$next/scope"
     printf '%s\n' "$ids" > "$next/ids"
     # This is machine-local data, never executable shell code or a repo file.
@@ -291,10 +297,12 @@ activate() {
     use_current_paths
     for id in $ids; do
         target=$(target_for "$id")
-        source=$(source_for "$id")
         mkdir -p "$(dirname -- "$target")"
         rm -f "$target"
-        ln -s "$source" "$target"
+        if ! { [ "$layout_version" = 4 ] && [ "$id" = mise-lock ]; }; then
+            source=$(source_for "$id")
+            ln -s "$source" "$target"
+        fi
     done
 
     rm -rf "$snapshot"
@@ -312,9 +320,13 @@ prevalidate_restore() {
     use_snapshot_paths
     for id in $ids; do
         target=$(target_for "$id")
-        source=$(source_for "$id")
-        [ -L "$target" ] || fail "managed target changed since activation: $target"
-        [ "$(readlink "$target")" = "$source" ] || fail "managed symlink changed since activation: $target"
+        if [ "$layout_version" = 4 ] && [ "$id" = mise-lock ]; then
+            [ ! -e "$target" ] && [ ! -L "$target" ] || fail "managed target changed since activation: $target"
+        else
+            source=$(source_for "$id")
+            [ -L "$target" ] || fail "managed target changed since activation: $target"
+            [ "$(readlink "$target")" = "$source" ] || fail "managed symlink changed since activation: $target"
+        fi
     done
 }
 
@@ -349,8 +361,15 @@ status() {
     drift=0
     for id in $ids; do
         target=$(target_for "$id")
-        source=$(source_for "$id")
-        if [ ! -L "$target" ] || [ "$(readlink "$target" 2>/dev/null || true)" != "$source" ]; then
+        if [ "$layout_version" = 4 ] && [ "$id" = mise-lock ]; then
+            changed=0
+            [ ! -e "$target" ] && [ ! -L "$target" ] || changed=1
+        else
+            source=$(source_for "$id")
+            changed=0
+            [ -L "$target" ] && [ "$(readlink "$target" 2>/dev/null || true)" = "$source" ] || changed=1
+        fi
+        if [ "$changed" -ne 0 ]; then
             printf 'shell-config: drift: %s\n' "$target" >&2
             drift=1
         fi

@@ -1,10 +1,10 @@
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {readFile,writeFile,mkdir,rename,lstat} from 'node:fs/promises';
+import {readFile,writeFile,mkdir,rename,lstat,realpath} from 'node:fs/promises';
 import {dirname,resolve,join} from 'node:path';
 import {homedir} from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
-import {pathToFileURL} from 'node:url';
+import {fileURLToPath} from 'node:url';
 import {defaults,validateSettings,parseStatus,parseWorktrees,gitText,gitANSI} from './model.mjs';
 const exec=promisify(execFile);
 const cacheRoot=join(process.env.XDG_CACHE_HOME||join(homedir(),'.cache'),'shell-config','pull-requests');
@@ -89,4 +89,9 @@ async function main() {
     if(g.kind==='unavailable') console.error(`shell-prompt: stage=git outcome=${g.reason}`);
   }
 }
-if(import.meta.url===pathToFileURL(process.argv[1]||'').href) main().catch(()=>{console.error('shell-prompt: stage=runtime outcome=failed');process.exitCode=1;});
+const modulePath=await realpath(fileURLToPath(import.meta.url));
+let entryPath='';
+if(process.argv[1]) {
+  try {entryPath=await realpath(process.argv[1]);} catch {entryPath=resolve(process.argv[1]);}
+}
+if(modulePath===entryPath) main().catch(()=>{console.error('shell-prompt: stage=runtime outcome=failed');process.exitCode=1;});
