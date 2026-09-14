@@ -20,7 +20,10 @@ jq = "1.8.2"
 fzf = "0.74.3"
 gh = "2.100.0"
 uv = "0.12.9"
+eza = "0.23.5"
 
 # Match the currently selected local runtime versions. Repositories may override.
 java = "temurin-25.0.2+10.0.LTS"
 node = "26.0.0"
+# Preserve the previous SDKMAN compiler version under mise ownership.
+kotlin = "2.1.21"

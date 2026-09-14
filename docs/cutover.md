@@ -7,8 +7,8 @@ machine state remains independently recoverable.
 
 ```sh
 ./install.sh status
-./install.sh plan
-./install.sh migrate
+./install.sh plan --shell-only
+./install.sh migrate --shell-only
 # Open a fresh terminal and evaluate the repository configuration.
 ./install.sh restore
 # Open a fresh terminal and you are back on the previous configuration.
@@ -28,7 +28,7 @@ in their requested state.
 
 Before activation, the installer snapshots every path it owns, including whether
 a path was absent or was itself a symlink. It then replaces only those leaf paths
-with symlinks into the current checkout. `restore` first proves that every managed
+with symlinks into the current checkout (or the local snapshot for PATH data). `restore` first proves that every managed
 path is still the symlink installed by this checkout; if any target drifted, it
 fails before overwriting anything. A successful restore recreates the snapshot
 and leaves it available for inspection.
@@ -38,18 +38,27 @@ that exists immediately before that activation. This makes repeated
 `toggle`/evaluation cycles behave naturally: changes made to the old setup while
 it is restored become the next rollback point.
 
-The installer manages:
+By default, the installer manages:
 
-- `${ZDOTDIR:-$HOME}/.zshrc` and `.zprofile`;
+- `${ZDOTDIR:-$HOME}/.zshrc`, `.zprofile`, and `.zshpath`;
 - the repository's mise, Starship, Atuin, and AI configuration under
   `${XDG_CONFIG_HOME:-$HOME/.config}`;
 - `~/.local/bin/ai`;
 - the four AI runtime modules under
   `${XDG_DATA_HOME:-$HOME/.local/share}/shell-config/ai`.
 
+`--shell-only` limits plan/migrate/activate to the startup files, PATH data, mise,
+Starship, and Atuin. The snapshot records this scope, so restore/status need no
+flag. Restore before switching the scope of an active cutover.
+
 It deliberately does **not** manage `.zshrc.local`, application credentials,
 Vim/Git/IDE configuration, shell history databases, or any existing agent login
-state. Machine-specific paths therefore remain outside the cutover.
+state. The invoking shell's PATH is captured verbatim in the private local
+snapshot, never committed or evaluated as code. `.zshpath` links to that data.
+Startup deduplicates it and filters the retired SDKMAN, Docker, Apollo, and
+VMware paths, then puts mise tools first. Ghostty, Obsidian, and JetBrains
+launchers remain available in a completely fresh terminal. An existing
+`.zshpath` is restored exactly; old version-1 snapshots remain restorable.
 
 ## State and recovery
 
@@ -73,6 +82,7 @@ portable recursive/preserve fallback. It preserves ordinary file contents,
 permissions, timestamps, directories, and symlinks; this is not an archival
 contract for every filesystem-specific ACL or extended attribute.
 
+Install the Zsh packages listed in the README before cutover.
 The script does not bootstrap mise, authenticate AI harnesses, or start a new
 shell. `migrate` requires mise 2026.9.1 or newer and sets the repository config
 as mise's global configuration while installing. A failed installation can

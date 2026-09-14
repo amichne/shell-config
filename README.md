@@ -1,8 +1,8 @@
 # A smaller shell setup
 
 This is a reviewable replacement for the active Apollo/Artemis startup and the
-unused custom dotfiles runtime. It has not been applied to the live home.
-The existing repositories and their uncommitted changes are untouched.
+unused custom dotfiles runtime. It supports a reversible cutover with `install.sh`; run `./install.sh status`
+to check whether this checkout is active.
 
 Use Zsh, mise for tool versions, and Starship for the prompt. Keep Atuin for
 history and zoxide plus Worktrunk for navigation. Deploy plain files with the
@@ -53,11 +53,11 @@ behavior simpler and testing its result.
 
 ## Current sources of complexity
 
-The live `.zshrc` loads both `apollo/zsh-entrypoint.sh` and the Artemis entrypoint.
+The pre-cutover `.zshrc` loads both `apollo/zsh-entrypoint.sh` and the Artemis entrypoint.
 It also initializes zoxide before Apollo initializes it again. Apollo loads
 Oh My Zsh, overrides commands such as `git`, performs extension synchronization,
-and loads SDKMAN. The live `.zprofile` selects SDKMAN's Java home directly.
-GitHub tokens are fetched and exported by the live `.zshrc`.
+and loads SDKMAN. The pre-cutover `.zprofile` selects SDKMAN's Java home directly.
+GitHub tokens are fetched and exported by the pre-cutover `.zshrc`.
 
 The newer dotfiles repository adds its own schema, dependency registry, plugin
 manifests, layered configuration, migration CLI, and optional chezmoi deployment.
@@ -73,31 +73,30 @@ shell integration would break automatic directory changes.
 
 | Concern | Owner |
 | --- | --- |
-| Login PATH | `.zprofile`, with mise shims |
-| Interactive options, completions, four shortcuts | `.zshrc` |
+| Login PATH | `.zprofile`, mise shims, and local `.zshpath` capture |
+| Interactive options, completion, highlighting, suggestions, shortcuts | `.zshrc` |
 | Tool versions and binary download locations | `config/mise/config.toml` and `mise.lock` |
 | Prompt | `config/starship.toml` |
 | History behavior | `config/atuin/config.toml` |
-| Machine-specific launcher paths | Optional, untracked `.zshrc.local` |
+| Machine-specific launcher paths | Captured `.zshpath`; optional `.zshrc.local` additions |
 | Java/Node versions for a project | That repository's `mise.toml` |
 | Gradle distribution and tasks | That repository's `gradlew` and Gradle configuration |
 | GUI apps, Git, Zsh, Vim, OS libraries | Homebrew or the Linux package manager |
 | Authentication, identities, agent settings | Each application's existing local storage |
 
 The four shortcuts are `l`, `zs`, `main`, and `f`; `rr` is a small directory
-function. No standard executable is replaced. The only required shell
-integrations are native initialization output from mise, zoxide, Worktrunk,
-Atuin, and Starship.
+function. No standard executable is replaced. Shell integrations use native initialization output from mise, zoxide, Worktrunk,
+fzf, Atuin, and Starship, plus the zsh-users highlighting and suggestion scripts.
 
 Support targets are Zsh on macOS and glibc-based Linux, on ARM64 and x86-64.
-The lockfile contains URLs and SHA-256 checksums for all 12 tools on all four
+The lockfile contains URLs and SHA-256 checksums for all 13 tools on all four
 targets. macOS ARM64 installation and behavior were exercised locally. Other
 targets have lockfile coverage, not runtime proof. Windows and Bash are outside
 this draft. No Nerd Font is required by the prompt.
 
 Self-contained means these files do not source Apollo, dotfiles, a Codex plugin,
 or a repository at a fixed path. Fresh provisioning still needs internet access,
-Zsh, Git, Vim, standard OS utilities, and mise. A fully offline machine also needs
+Zsh, Git, Vim, standard OS utilities, mise, and the Zsh packages below. A fully offline machine also needs
 the binaries and native libraries supplied separately; copying configuration
 alone cannot provide those.
 
@@ -133,7 +132,7 @@ automation should use bounded commands and structured output, without `fzf`.
 - `main` runs `wt switch '^'`. It navigates to the default-branch worktree and
   does not fetch or pull. Fetch explicitly when freshness is required.
 - `zs` runs `exec zsh -l`. It starts a fresh shell; check for active jobs first.
-  Already inherited credentials and PATH entries are not cleansed by `exec`.
+  Inherited credentials remain; startup filters the retired PATH entries below.
   Fully reopen the terminal application for the first migration.
 - `f PATH PATTERN` uses ripgrep, which respects ignore rules and normally skips
   hidden files. Use `rg --hidden` or `rg -uuu` explicitly when needed.
@@ -142,8 +141,21 @@ automation should use bounded commands and structured output, without `fzf`.
   `git config --global push.autoSetupRemote true` makes ordinary `git push`
   establish upstreams under Git's supported push modes.
 - Automatic ticket prefixes, staging every file, Git overrides, OMZ aliases,
-  autosuggestions, highlighting, framework plugins, and SDKMAN hooks are absent.
-  A repository that requires ticket enforcement should encode it there.
+  framework plugins, and SDKMAN hooks are absent. Kotlin 2.1.21 and Java are
+  owned by mise; Gradle stays with repository wrappers.
+- Syntax highlighting and history autosuggestions come from the standalone
+  zsh-users packages. Tab uses grouped menu completion with case-insensitive
+  fallback. Up/Down search history using the prefix you typed. Right-arrow at
+  the end of the line accepts a suggestion. Ctrl-T selects files; Alt-C selects
+  directories; `**` followed by Tab opens fuzzy completion.
+- Directory names can be entered directly (`AUTO_CD`), directory history avoids
+  duplicates, interactive comments work, and Ctrl-S no longer freezes output.
+  Existing editor/pager choices are respected. Native history is shared across
+  sessions and commands prefixed with a space are excluded.
+- PATH entries are captured as local data at activation and deduplicated. SDKMAN,
+  `~/.docker`, `~/code/apollo`, and VMware Fusion entries are filtered from both
+  captured and inherited PATH. Ghostty, Obsidian, and JetBrains launchers remain.
+  This removes startup integration and PATH entries, not installed applications.
 - Ctrl-R selects an Atuin result into the command line. Enter there executes
   it. Up-arrow stays with Zsh. This is a proposed preference, not a conclusion
   about key usage from history. Set `enter_accept = true` to retain instant
@@ -154,13 +166,28 @@ automation should use bounded commands and structured output, without `fzf`.
 
 ## Try the setup with a reversible cutover
 
-After installing mise 2026.9.1 or newer, preview every managed path and the
-locked tool installation, then migrate in one command:
+Install the standalone Zsh packages first (on macOS):
 
 ```sh
-./install.sh plan
-./install.sh migrate
+brew install zsh-autosuggestions zsh-syntax-highlighting zsh-completions
 ```
+
+On Linux use the corresponding distribution packages. Startup searches
+`/opt/homebrew/share`, `/usr/local/share`, and `/usr/share`. Missing integrations
+produce a bounded `stage=… outcome=…` diagnostic and a failed startup status;
+native completion and the basic prompt remain available for repairs. `zs`
+retries in a fresh process, with no duplicate callbacks from repeated sourcing.
+
+After installing mise 2026.9.1 or newer, run the cutover from the shell whose
+PATH you want to preserve:
+
+```sh
+./install.sh plan --shell-only
+./install.sh migrate --shell-only
+```
+
+`--shell-only` leaves the AI command and configuration alone. Omit it when
+migrating the complete repository, including AI.
 
 `migrate` provisions the locked tools before it snapshots and activates the
 repository configuration. If provisioning fails, it does not replace the shell
@@ -180,7 +207,12 @@ managed paths, drift behavior, and recovery contract.
 2. Back up the existing `.zshrc`, `.zprofile`, optional `.zshrc.local`, and the
    destination mise, Starship, and Atuin config files. Record which destinations
    did not exist so rollback can restore absence. Preserve permissions. Keep
-   backups outside a public Git repository.
+   backups outside a public Git repository. Install the Zsh packages above first.
+   Capture PATH as data before switching, including `.zshpath` in your backup:
+
+   ```sh
+   (umask 077; printf '%s\n' "$PATH" > "${ZDOTDIR:-$HOME}/.zshpath")
+   ```
 3. Review the plain files, then copy mise configuration first, from this folder:
 
    ```sh
@@ -202,10 +234,10 @@ managed paths, drift behavior, and recovery contract.
    install -m 600 .zshrc "${ZDOTDIR:-$HOME}/.zshrc"
    ```
 
-   Use `.zshrc.local.example` to retain the required launcher paths. Preserve
-   the existing Vim, Git, IdeaVim, Codex, SSH, and application files. Replacement
-   of `.zprofile` removes the old SDKMAN Java assignment; add the Obsidian CLI
-   path to the local file if it is wanted. The observed `.zshenv` was empty.
+   Use `.zshrc.local.example` for additional launcher paths. Preserve the existing
+   Vim, Git, IdeaVim, Codex, SSH, and application files. `.zshpath` retains the
+   captured launcher paths and startup removes the old SDKMAN Java assignment.
+   The observed `.zshenv` was empty.
 6. Open a new terminal application session and check `mise which java`,
    `java -version`, `node --version`, `kast`, `idea`, `jbcontext`, Ctrl-R,
    `wt switch`, Git completion, and a representative repository build. IDEs may
@@ -262,9 +294,10 @@ python3 check.py --mise /path/to/mise --data-dir /path/to/disposable/mise/data
 ```
 
 It checks lock/config agreement and checksums for four platforms, noninteractive
-silence, login shims, Node/Java versions and `JAVA_HOME`, missing-tool failure,
+silence, login shims, Node/Java versions and `JAVA_HOME`, missing-tool failure with usable completion, preserved/retired PATH entries,
 exit-code propagation, repeated sourcing, preservation of an existing hook,
-Atuin bindings, quoted navigation/search arguments, a real Worktrunk directory
+Atuin/fzf bindings, actual PTY typing and Tab completion, suggestion acceptance,
+syntax colors, prompt failure state, quoted navigation/search arguments, a real Worktrunk directory
 switch in a temporary Git repository, and Starship rendering. It does not read
 live credentials or Atuin history. Python 3.11+ is only a verification dependency.
 
@@ -280,3 +313,25 @@ References: [mise configuration](https://mise.jdx.dev/configuration.html),
 [Starship setup](https://starship.rs/guide/),
 [Atuin initialization](https://docs.atuin.sh/main/reference/init/), and
 [Worktrunk shell integration](https://worktrunk.dev/config/).
+
+## Prompt iteration
+
+Edit `config/starship.toml` while the checkout is active; Starship reads it for
+each prompt. It is a local extraction of [a3chron/ctp-blue@1.1](https://stellar-hub.vercel.app/a3chron/ctp-blue),
+the theme selected in Stellar. Its framed layout and module settings are retained:
+shell, memory, and detected languages on top; host, directory, Git, and duration
+in the middle; battery and the input marker below. Failure turns the marker red.
+
+The palette uses the local Codex dark appearance as its reference: Dracula's
+purple, cyan, pink, green, and red, with the Codex blue accent `#3a83f7`.
+These are explicit prompt colors; the terminal application owns its background.
+This is a static local palette, so later Codex appearance edits are not synced.
+Stellar is not required to load or edit it. The original cached Stellar theme
+is retained on this machine.
+
+The selection was informed by [Terminal Trove's fzf entry](https://terminaltrove.com/fzf/)
+and [this HN discussion](https://news.ycombinator.com/item?id=44626363), then
+checked against [fzf's integration instructions](https://github.com/junegunn/fzf#setting-up-shell-integration),
+[zsh-users highlighting](https://github.com/zsh-users/zsh-syntax-highlighting/blob/master/INSTALL.md),
+[autosuggestions](https://github.com/zsh-users/zsh-autosuggestions/blob/master/INSTALL.md),
+and [Starship configuration](https://starship.rs/config/).

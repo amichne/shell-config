@@ -29,6 +29,8 @@ def main():
             "config/mise/mise.lock", "config/starship.toml",
             "config/atuin/config.toml", "config/ai/config.json", "bin/ai",
             "ai/core.mjs", "ai/config.mjs", "ai/main.mjs", "ai/ui.mjs",
+            "bin/shell-prompt", "bin/prompt-editor", "prompt/context.mjs",
+            "prompt/model.mjs", "prompt/server.mjs", "prompt/editor.html",
         )
         for name in sources:
             path = repo / name
@@ -37,6 +39,7 @@ def main():
         (repo / "install.sh").chmod(0o755)
 
         (zdot / ".zshrc").write_text("original-zshrc\n")
+        (zdot / ".zshpath").write_text("original-path-data\n")
         (config / "mise").mkdir()
         (config / "mise/config.toml").write_text("original-mise\n")
         (config / "ai").mkdir()
@@ -112,6 +115,9 @@ printf '\\n' >> "$MISE_LOG"
         assert os.readlink(zdot / ".zshrc") == str(repo / ".zshrc")
         assert not (home / ".zshrc").exists(), "ZDOTDIR was ignored"
         assert (config / "ai/config.json").is_symlink()
+        assert (zdot / ".zshpath").is_symlink()
+        assert (zdot / ".zshpath").read_text() == env["PATH"] + "\n"
+        assert (zdot / ".zshpath").stat().st_mode & 0o777 == 0o600
         assert (home / ".local/bin/ai").is_symlink()
         assert "active from" in run("status").stdout
         log_after_migrate = mise_log.read_text()
@@ -133,6 +139,7 @@ printf '\\n' >> "$MISE_LOG"
 
         run("restore")
         assert (zdot / ".zshrc").read_text() == "original-zshrc\n"
+        assert (zdot / ".zshpath").read_text() == "original-path-data\n"
         assert not (zdot / ".zprofile").exists(), "original absence was not restored"
         assert (config / "mise/config.toml").read_text() == "original-mise\n"
         assert (config / "ai/config.json").read_text() == "original-ai\n"
@@ -149,6 +156,28 @@ printf '\\n' >> "$MISE_LOG"
         run("toggle")
         assert (zdot / ".zshrc").read_text() == "original-zshrc-v2\n"
         assert "previous snapshot retained" in run("status").stdout
+
+        # Preserve support for restoring a pre-PATH-capture (version 1) cutover.
+        run("activate")
+        snapshot = state / "shell-config-cutover/snapshot"
+        (snapshot / "version").write_text("1\n")
+        (zdot / ".zshpath").unlink()
+        (zdot / ".zshpath").write_text("v1-unmanaged-path\n")
+        run("restore")
+        assert (zdot / ".zshpath").read_text() == "v1-unmanaged-path\n"
+
+        # Shell iteration must not replace an unrelated AI configuration.
+        assert 'config/ai/config.json' not in run('plan', '--shell-only').stdout
+        run('migrate', '--shell-only')
+        assert (zdot / '.zshrc').is_symlink()
+        assert not (config / 'ai/config.json').is_symlink()
+        assert (config / 'ai/config.json').read_text() == 'original-ai\n'
+        assert (snapshot / 'scope').read_text() == 'shell\n'
+        assert 'prompt-editor-bin' in (snapshot / 'ids').read_text()
+        run('status')
+        run('restore')
+        assert (zdot / '.zshrc').read_text() == 'original-zshrc-v2\n'
+        assert (zdot / '.zshpath').read_text() == 'v1-unmanaged-path\n'
 
     print("CUTOVER_CHECKS_OK")
 

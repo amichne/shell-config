@@ -9,11 +9,96 @@ The supplied data directory must be a disposable installation, not live state.
 import argparse
 import json
 import os
+import fcntl
 from pathlib import Path
+import pty
+import re
+import select
 import shutil
+import signal
+import struct
 import subprocess
 import tempfile
+import termios
+import time
 import tomllib
+
+
+def check_terminal(zsh, env, cwd):
+    """Exercise real ZLE redraws and keypresses in a disposable PTY."""
+    pid, terminal = pty.fork()
+    if pid == 0:
+        os.chdir(cwd)
+        os.execve(zsh, [zsh, '-i'], env)
+    fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 100, 0, 0))
+    ansi = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)')
+    pending = ''
+
+    def send(text):
+        os.write(terminal, text.encode())
+
+    def expect(needle, raw=False):
+        nonlocal pending
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            offsets = []
+            cursor = 0
+            if not raw:
+                for escape in ansi.finditer(pending):
+                    offsets.extend(range(cursor, escape.start()))
+                    cursor = escape.end()
+                offsets.extend(range(cursor, len(pending)))
+            clean = pending if raw else ''.join(pending[i] for i in offsets)
+            if needle in clean:
+                end = clean.index(needle) + len(needle)
+                # Retain subsequent prompt bytes already received in this read.
+                raw_end = end if raw else offsets[end - 1] + 1
+                result, pending = clean[:end], pending[raw_end:]
+                return result
+            if select.select([terminal], [], [], .1)[0]:
+                pending += os.read(terminal, 65536).decode(errors='replace')
+        raise AssertionError({'expected': needle, 'terminal': pending[-4000:]})
+
+    try:
+        startup = expect('\x1b[?2004h', raw=True)
+        assert 'shell-config: stage=' not in startup, startup
+        send("[[ $_SHELL_CONFIG_LOADED == 1 && $(bindkey '^R') == *atuin* && $(bindkey '^T') == *fzf-file-widget* && $(bindkey '^[c') == *fzf-cd-widget* ]] && print TERMINAL_READY\n")
+        expect('\r\nTERMINAL_READY\r\n')
+        expect('\x1b[?2004h', raw=True)
+        send("shell_check_capture() { print -r -- \"ZLE_BUFFER=$BUFFER\" \"ZLE_SUGGEST=$POSTDISPLAY\" \"ZLE_HIGHLIGHT=${(j:;:)region_highlight}\"; zle redisplay; }; zle -N shell_check_capture; ZSH_AUTOSUGGEST_IGNORE_WIDGETS+=(shell_check_capture); bindkey '^X' shell_check_capture\n")
+        expect('\x1b[?2004h', raw=True)
+        # A unique file with a space must be completed as one shell argument.
+        (cwd / 'completion fixture').write_text('fixture\n')
+        send('print -r -- completion\t')
+        time.sleep(.15)
+        send('\n')
+        expect('\r\ncompletion fixture\r\n')
+        expect('\x1b[?2004h', raw=True)
+        send('print -r -- history-fixture-unique\n')
+        expect('\r\nhistory-fixture-unique\r\n')
+        expect('\x1b[?2004h', raw=True)
+        send('print -r -- history-fixt')
+        time.sleep(.4)
+        send('\x18')
+        suggestion = expect('ZLE_HIGHLIGHT=')
+        assert 'ZLE_SUGGEST=ure-unique' in suggestion, suggestion
+        send('\x1b[C\n')
+        expect('\r\nhistory-fixture-unique\r\n')
+        expect('\x1b[?2004h', raw=True)
+        send('definitely_missing_shell_command')
+        time.sleep(.15)
+        send('\x18')
+        expect('ZLE_HIGHLIGHT=')
+        highlight = expect('\r\n')
+        assert 'fg=red' in highlight, highlight
+        send('\x03')
+        expect('\x1b[?2004h', raw=True)
+        send('false\n')
+        expect('\x1b[38;2;255;85;85m', raw=True)
+    finally:
+        os.kill(pid, signal.SIGTERM)
+        os.close(terminal)
+        os.waitpid(pid, 0)
 
 
 def main():
@@ -48,8 +133,20 @@ def main():
         shutil.copy2(source / ".zshrc", home / ".zshrc")
         shutil.copy2(source / ".zprofile", home / ".zprofile")
         shutil.copytree(source / "config", root / "config")
+        shutil.copytree(source / "prompt", root / "data/shell-config/prompt")
         (home / ".local/bin").mkdir(parents=True)
         (home / ".local/bin/mise").symlink_to(mise)
+        (home / ".local/bin/shell-prompt").symlink_to(source / "bin/shell-prompt")
+        (home / ".local/bin/prompt-editor").symlink_to(source / "bin/prompt-editor")
+        # The captured PATH is data: spaces and shell metacharacters must survive.
+        kept = [str(root / 'launcher with spaces'), str(root / '$(touch UNEXPECTED)'),
+                '/Applications/Ghostty.app/Contents/MacOS',
+                '/Applications/Obsidian.app/Contents/MacOS']
+        retired = [str(home / '.sdkman/candidates/java/current/bin'),
+                   str(home / '.sdkman/candidates/kotlin/current/bin'),
+                   str(home / '.docker/bin'), str(home / 'code/apollo/artemis/bin'),
+                   '/Applications/VMware Fusion.app/Contents/Public']
+        (home / '.zshpath').write_text(':'.join(kept + retired + kept) + '\n')
         env = {
             "HOME": str(home),
             "PATH": os.pathsep.join((str(Path(git).parent), "/usr/bin", "/bin")),
@@ -80,10 +177,16 @@ def main():
         assert not quiet.stdout and not quiet.stderr, "noninteractive startup output"
         login = run([zsh, "-lc", "command -v node"])
         assert login.stdout.strip() == str(data / "shims/node"), login.stdout
+        login_path = run([zsh, '-lc', 'print -rl -- $path']).stdout.splitlines()
+        assert all(login_path.count(entry) == 1 for entry in kept), login_path
+        assert not set(retired).intersection(login_path), login_path
+        assert not (root / 'UNEXPECTED').exists(), 'PATH data was executed'
         run([str(mise), "exec", "--", "sh", "-c", "exit 37"], expected=37)
         versions = run([str(mise), "exec", "--", "sh", "-c",
                         'node --version && java -version && test -x "$JAVA_HOME/bin/java"'])
         assert "v26.0.0" in versions.stdout and '"25.0.2"' in versions.stderr
+        kotlin = run([str(mise), 'exec', '--', 'kotlinc', '-version'])
+        assert '2.1.21' in kotlin.stderr, kotlin.stderr
         config_path = root / "config/mise/config.toml"
         original = config_path.read_text()
         try:
@@ -105,6 +208,11 @@ existing_hook() { :; }
 precmd_functions=(existing_hook)
 source "$HOME/.zshrc" || exit
 [[ $_SHELL_CONFIG_LOADED == 1 ]] || exit 20
+(( $+functions[_zsh_highlight] && $+functions[_zsh_autosuggest_start] )) || exit 34
+[[ ${_comps[git]} == _git ]] || exit 35
+[[ ${_comps[mise]} == _mise && ${_comps[atuin]} == _atuin ]] || exit 38
+[[ -o autocd && -o interactivecomments && ! -o flowcontrol ]] || exit 36
+[[ -o sharehistory && -o histignorespace ]] || exit 37
 [[ ${precmd_functions[(Ie)existing_hook]} != 0 ]] || exit 21
 before_path=$PATH
 before_hooks="${(j: :)precmd_functions}|${(j: :)preexec_functions}|${(j: :)chpwd_functions}"
@@ -115,6 +223,8 @@ source "$HOME/.zshrc" || exit
 [[ $(bindkey '^R') == *atuin* ]] || exit 25
 [[ $(bindkey '^[[A') != *atuin* ]] || exit 26
 (( ! $+functions[git] && ! $+functions[rmdir] )) || exit 27
+[[ ${aliases[ls]} == 'eza --smart-group --group-directories-first --icons=automatic' ]] || exit 43
+[[ ${aliases[l]} == 'eza --smart-group --group-directories-first --icons=automatic --all' ]] || exit 44
 [[ -z ${GITHUB_PERSONAL_ACCESS_TOKEN-}${CODEX_GITHUB_PERSONAL_ACCESS_TOKEN-} ]] || exit 28
 root=$PWD
 cd -- 'sub directory' || exit
@@ -128,18 +238,29 @@ f > /dev/null 2>&1
 wt switch --create fixture --no-hooks > /dev/null || exit
 [[ $PWD != $root ]] || exit 32
 [[ $(git branch --show-current) == fixture ]] || exit 33
+[[ $(shell-prompt context --json) == *'"kind":"repository"'* ]] || exit 39
 starship prompt --status=1 > /dev/null || exit
 print -- CHECKS_OK
 '''
         interactive = run([zsh, "-fic", script], cwd=repo)
         assert interactive.stdout.strip() == "CHECKS_OK", interactive.stdout
         assert "[ERROR]" not in interactive.stderr and "[WARN]" not in interactive.stderr, interactive.stderr
+        check_terminal(zsh, env, root)
 
-        # Missing mise must stop initialization with a useful status and message.
+        # Missing mise reports failure without disabling native completion/ZLE.
         (home / ".local/bin/mise").unlink()
         env["PATH"] = "/usr/bin:/bin"
         failed = run([zsh, "-fic", 'source "$HOME/.zshrc"'], expected=127)
-        assert "mise is missing" in failed.stderr
+        assert "stage=mise outcome=missing-command" in failed.stderr
+        degraded = run([zsh, '-fic', '''
+source "$HOME/.zshrc"
+[[ $? == 127 && ${_comps[git]} == _git ]] || exit 40
+(( $+functions[_zsh_highlight] )) || exit 41
+before_hooks="${(j: :)precmd_functions}"
+source "$HOME/.zshrc"
+[[ $? == 127 && "${(j: :)precmd_functions}" == $before_hooks ]] || exit 42
+'''])
+        assert degraded.stderr.count('stage=mise outcome=missing-command') == 1
 
     print(json.dumps({"result": "passed", "locked_tools": len(config["tools"]),
                       "lock_platforms": 4, "runtime_platform": os.uname().sysname,
@@ -148,7 +269,9 @@ print -- CHECKS_OK
                                  "missing dependency failure", "repeated sourcing",
                                  "existing hook preservation", "Atuin key bindings",
                                  "quoted paths and search exit codes", "Worktrunk changes directory",
-                                 "Starship prompt"]}, indent=2))
+                                 "typed Git prompt context", "Starship prompt",
+                                 "captured PATH and retired path filtering",
+                                 "PTY Tab completion, suggestions, highlighting, fzf bindings and exit status"]}, indent=2))
 
 
 if __name__ == "__main__":
