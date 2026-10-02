@@ -21,6 +21,9 @@ an explicitly set `EDITOR`/`VISUAL` or `.zshrc.local` can choose another editor.
 
 At the prompt, `Ctrl-X`, then `?` opens `keys`. Neovim's `Space` prefix shows
 WhichKey; `Space ?` opens it immediately. Yazi's full help uses `F1` or `~`.
+`Ctrl-W` deletes the preceding identifier or path part: `parseHTTPResponse`
+becomes `parseHTTP`, `snake_case` becomes `snake_`, and `path/to/file` becomes
+`path/to/`. Native yank, undo, and numeric arguments remain available.
 The shell cheat sheet reads `# description:` and `# usage:` headers from
 installed helper scripts/functions. Neovim help reads actual described mappings
 from your current configuration. Work panel help shares its action definitions.
@@ -37,6 +40,11 @@ manual additions enter Git with `config add -f -- .config/zsh/completions/_comma
 `fd` provides fzf's file/directory candidates, respecting ignore rules and
 excluding `.git`. Atuin owns `Ctrl-R`, fzf owns `Ctrl-T`/`Alt-C`, and the prompt
 does no GitHub/Jira requests. `bat` is available for file previews and direct use.
+The prompt reads tracked changes separately from untracked files. If the
+untracked scan exceeds its deadline, branch and tracked changes remain visible
+alongside `untracked unknown` (compact `?unknown`); it cannot report `clean`.
+Git read deadlines stop owned helper processes too. `config` Git completions
+use the HOME dotfiles repository even while the shell is in another repository.
 
 Projects are discovered one level below `$HOME/code`; Git supplies their
 registered worktrees. Set `PROJECT_ROOTS` to a colon-separated list of explicit
@@ -54,4 +62,5 @@ python3 tests/helpers.py
 python3 tests/editor.py
 python3 tests/work.py
 python3 tests/configure.py
+node --test prompt/model.test.mjs
 ```

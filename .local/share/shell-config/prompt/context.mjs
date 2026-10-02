@@ -1,16 +1,51 @@
-import {execFile} from 'node:child_process';
+import {execFile,spawn} from 'node:child_process';
 import {promisify} from 'node:util';
 import {readFile,writeFile,mkdir,rename,lstat,realpath} from 'node:fs/promises';
 import {dirname,resolve,join} from 'node:path';
 import {homedir} from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {defaults,validateSettings,parseStatus,parseWorktrees,gitText,gitANSI} from './model.mjs';
+import {performance} from 'node:perf_hooks';
+import {defaults,validateSettings,parseStatus,parseUntracked,parseWorktrees,gitText,gitANSI} from './model.mjs';
 const exec=promisify(execFile);
 const cacheRoot=join(process.env.XDG_CACHE_HOME||join(homedir(),'.cache'),'shell-config','pull-requests');
 const hash=s=>createHash('sha256').update(s).digest('hex');
-async function git(args,cwd) {
-  return (await exec('git',args,{cwd,encoding:'utf8',timeout:450,maxBuffer:4*1024*1024,env:{...process.env,GIT_OPTIONAL_LOCKS:'0',LC_ALL:'C'}})).stdout;
+function git(args,cwd,stage,{absentAllowed=false}={}) {
+  // A detached POSIX process group lets the deadline stop Git's helpers as well
+  // as Git itself. Never expose stderr, arguments, or repository paths in evidence.
+  return new Promise(resolveResult=>{
+    const started=performance.now(); let outcome='RUNNING';
+    const chunks=[]; let bytes=0;
+    const stop=()=>{
+      if(child.pid) {
+        try {process.kill(-child.pid,'SIGKILL');} catch(e) {if(e.code!=='ESRCH') child.kill('SIGKILL');}
+      }
+    };
+    const child=spawn('git',args,{cwd,detached:true,stdio:['ignore','pipe','pipe'],env:{...process.env,GIT_OPTIONAL_LOCKS:'0',LC_ALL:'C'}});
+    const evidence=result=>({stage,outcome:result,elapsedMs:Math.round(performance.now()-started)});
+    const collect=(chunk,retain)=>{
+      if(outcome!=='RUNNING') return;
+      bytes+=chunk.length;
+      if(bytes>4*1024*1024) {outcome='OUTPUT_LIMIT';clearTimeout(deadline);stop();return;}
+      if(retain) chunks.push(chunk);
+    };
+    child.stdout.on('data',chunk=>collect(chunk,true));
+    child.stderr.on('data',chunk=>collect(chunk,false));
+    child.on('error',()=>{
+      outcome='SPAWN_FAILED'; clearTimeout(deadline);
+      resolveResult({kind:'unavailable',reason:'git-read-failed',evidence:evidence(outcome)});
+    });
+    child.on('close',code=>{
+      clearTimeout(deadline);
+      if(outcome==='SPAWN_FAILED') return;
+      if(outcome==='TIMED_OUT') return resolveResult({kind:'unavailable',reason:'git-timeout',evidence:evidence(outcome)});
+      if(outcome==='OUTPUT_LIMIT') return resolveResult({kind:'unavailable',reason:'git-output-limit',evidence:evidence(outcome)});
+      if(code===0) return resolveResult({kind:'complete',stdout:Buffer.concat(chunks).toString('utf8'),evidence:evidence('COMPLETE')});
+      if(absentAllowed && code===1) return resolveResult({kind:'complete',stdout:'',evidence:evidence('ABSENT')});
+      resolveResult({kind:'unavailable',reason:'git-read-failed',evidence:evidence('FAILED')});
+    });
+    const deadline=setTimeout(()=>{outcome='TIMED_OUT';stop();},450);
+  });
 }
 async function hasRepository(cwd) {
   if(process.env.GIT_DIR) return true;
@@ -30,20 +65,25 @@ async function readCache(key,oid) {
 export async function readRepository(cwd=process.cwd()) {
   try {
     if(!await hasRepository(cwd)) return {kind:'outside'};
-    const [raw,paths,worktrees]=await Promise.all([
-      git(['status','--porcelain=v2','--branch','--show-stash','--untracked-files=all','--ignore-submodules=none','-z'],cwd),
-      git(['rev-parse','--path-format=absolute','--show-toplevel','--git-common-dir'],cwd),
-      git(['worktree','list','--porcelain','-z'],cwd)
+    const [status,paths,worktrees,untrackedRead]=await Promise.all([
+      git(['status','--porcelain=v2','--branch','--show-stash','--untracked-files=no','--ignore-submodules=none','-z'],cwd,'status'),
+      git(['rev-parse','--path-format=absolute','--show-toplevel','--git-common-dir'],cwd,'paths'),
+      git(['worktree','list','--porcelain','-z'],cwd,'worktrees'),
+      git(['ls-files','--others','--exclude-standard','-z'],cwd,'untracked')
     ]);
-    const parsed=parseStatus(raw); if(parsed.kind!=='repository') return parsed;
-    const parts=paths.replace(/\n$/,'').split('\n');
-    if(parts.length!==2) return {kind:'unavailable',reason:'unsupported-path'};
+    const evidence=[status,paths,worktrees,untrackedRead].map(read=>read.evidence);
+    for(const read of [status,paths,worktrees]) if(read.kind!=='complete') return {kind:'unavailable',reason:read.reason,evidence};
+    const parsed=parseStatus(status.stdout,'none'); if(parsed.kind!=='repository') return {...parsed,evidence};
+    const untracked=untrackedRead.kind==='complete'?parseUntracked(untrackedRead.stdout):{kind:'unavailable',reason:untrackedRead.reason};
+    const parts=paths.stdout.replace(/\n$/,'').split('\n');
+    if(parts.length!==2) return {kind:'unavailable',reason:'unsupported-path',evidence};
     const [root,common]=parts;
-    let origin='';
-    try {origin=await git(['config','--get','remote.origin.url'],cwd);} catch(e) {if(e.code!==1) throw e;}
-    const key=hash(common+'\0'+(parsed.branch.name||parsed.branch.oid)+'\0'+origin);
-    return {...parsed,root,cacheKey:key,worktree:parseWorktrees(worktrees,root),pr:await readCache(key,parsed.branch.oid)};
-  } catch(e) {return {kind:'unavailable',reason:e.killed?'git-timeout':'git-read-failed'};}
+    const origin=await git(['config','--get','remote.origin.url'],cwd,'origin',{absentAllowed:true});
+    evidence.push(origin.evidence);
+    if(origin.kind!=='complete') return {kind:'unavailable',reason:origin.reason,evidence};
+    const key=hash(common+'\0'+(parsed.branch.name||parsed.branch.oid)+'\0'+origin.stdout);
+    return {...parsed,untracked,root,cacheKey:key,evidence,worktree:parseWorktrees(worktrees.stdout,root),pr:await readCache(key,parsed.branch.oid)};
+  } catch {return {kind:'unavailable',reason:'git-read-failed'};}
 }
 export async function refreshPR(cwd=process.cwd()) {
   const g=await readRepository(cwd);
@@ -87,6 +127,7 @@ async function main() {
   else {
     const output=ansi?gitANSI(s,g):gitText(s,g); if(output) console.log(output);
     if(g.kind==='unavailable') console.error(`shell-prompt: stage=git outcome=${g.reason}`);
+    else if(g.kind==='repository' && g.untracked.kind==='unavailable') console.error(`shell-prompt: stage=untracked outcome=${g.untracked.reason}`);
   }
 }
 const modulePath=await realpath(fileURLToPath(import.meta.url));

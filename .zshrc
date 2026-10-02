@@ -34,6 +34,13 @@ setopt HIST_EXPIRE_DUPS_FIRST HIST_IGNORE_DUPS HIST_FIND_NO_DUPS HIST_REDUCE_BLA
 setopt AUTO_CD AUTO_PUSHD PUSHD_IGNORE_DUPS PUSHD_SILENT INTERACTIVE_COMMENTS
 unsetopt BEEP FLOW_CONTROL
 bindkey -e
+# Ctrl-W deletes identifier/path parts; native ZLE retains kill-ring, undo,
+# and numeric-argument behavior. Match plugin wrappers of this widget too.
+autoload -Uz backward-kill-word-match
+zle -N backward-kill-word backward-kill-word-match
+zstyle ':zle:*backward-kill-word' word-style normal-subword
+zstyle ':zle:*backward-kill-word' word-chars ''
+bindkey '^W' backward-kill-word
 bindkey '^[[H' beginning-of-line
 bindkey '^[[F' end-of-line
 bindkey '^[[3~' delete-char
@@ -147,6 +154,10 @@ for _shell_plugin in zsh-autosuggestions zsh-syntax-highlighting; do
         if ! source "$_shell_plugin_file"; then
             print -u2 -- "shell-config: stage=$_shell_plugin outcome=source-failed"
             _SHELL_CONFIG_RESULT=1
+        elif [[ $_shell_plugin == zsh-autosuggestions ]]; then
+            # Word-match widgets pass literal text to this native widget.
+            # Autosuggestions' builtin wrapper drops those arguments.
+            ZSH_AUTOSUGGEST_IGNORE_WIDGETS+=(copy-region-as-kill)
         fi
     else
         print -u2 -- "shell-config: stage=$_shell_plugin outcome=missing-plugin; install the $_shell_plugin system package"

@@ -77,6 +77,7 @@
 !/.local/share/shell-config/prompt/editor.html
 !/.local/share/shell-config/prompt/editor.mjs
 !/.local/share/shell-config/prompt/model.mjs
+!/.local/share/shell-config/prompt/model.test.mjs
 !/.local/share/shell-config/prompt/server.mjs
 !/.local/share/shell-config/terminal/
 !/.local/share/shell-config/terminal/configure.py

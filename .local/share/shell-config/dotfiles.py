@@ -140,6 +140,7 @@ CORE = (
     "prompt/editor.mjs", "prompt/editor.html", "dotfiles.py", "tests/dotfiles.py",
 )
 OPTIONAL = (
+    "prompt/model.test.mjs",
     "README.md", ".zshrc.local.example", "docs/ai.md", "docs/cutover.md",
     "docs/dotfiles.md", "docs/pi.md", "pi/settings.public.json",
     "pi/packages.public.json", "pi/sync-settings.py", "pi/pi-lsp.json",
