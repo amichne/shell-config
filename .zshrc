@@ -57,6 +57,7 @@ done
 autoload -Uz compinit
 # Ignore insecure directories; never disable the security check with compinit -u.
 compinit -i || _SHELL_CONFIG_RESULT=1
+compdef _git config
 zmodload zsh/complist
 zstyle ':completion:*' menu select
 zstyle ':completion:*' matcher-list '' 'm:{a-zA-Z}={A-Za-z}'
@@ -90,7 +91,7 @@ PROMPT=${PROMPT/\\n/$'\n'}
 _shell_activate() {
     local init_code
     if (( ! $+commands[$1] )); then
-        print -u2 -- "shell-config: stage=$1 outcome=missing-command; run ./install.sh migrate from the checkout"
+        print -u2 -- "shell-config: stage=$1 outcome=missing-command; run mise install outside a project"
         _SHELL_CONFIG_RESULT=127
         return
     fi

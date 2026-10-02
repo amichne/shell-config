@@ -1,0 +1,15 @@
+[
+  {
+    "source": "git:github.com/amosblomqvist/pi-interactive-subagents@c3e8b53c0754ae5ccc19fdab5a7481ec039bc2f7"
+  },
+  {
+    "source": "git:github.com/amosblomqvist/pi-config@f82da563ab05d66729492d64c7ed4e96db3663f3",
+    "extensions": [],
+    "skills": [],
+    "prompts": [],
+    "themes": []
+  },
+  {
+    "source": "npm:@narumitw/pi-lsp@0.49.8"
+  }
+]

@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+if [ -f "$script_dir/../share/shell-config/dotfiles.py" ]; then
+    exec python3 "$script_dir/../share/shell-config/dotfiles.py" "$@"
+fi
+if [ -f "$script_dir/../.zshrc" ] && [ -f "$script_dir/../dotfiles.py" ]; then
+    exec python3 "$script_dir/../dotfiles.py" "$@"
+fi
+printf '%s\n' 'dotfiles: migration driver is missing' >&2
+exit 2

@@ -1,13 +1,48 @@
 # A smaller shell setup
 
-This is a reviewable replacement for the active Apollo/Artemis startup and the
-unused custom dotfiles runtime. It supports a reversible cutover with `install.sh`; run `./install.sh status`
-to check whether this checkout is active.
+Manage the public configuration with a bare Git repository at `~/.cfg` and
+`$HOME` as its working tree, following
+[Atlassian's dotfiles pattern](https://www.atlassian.com/git/tutorials/dotfiles).
+The migration keeps the source checkout and its full history, creates one local
+commit with HOME-relative paths, and installs an interactive `dotfiles` menu.
 
 Use Zsh, mise for tool versions, and Starship for the prompt. Keep Atuin for
-history and zoxide plus Worktrunk for navigation. Deploy plain files with the
-standard `install` command. There is no management CLI, feature registry,
-profile parser, plugin loader, chezmoi adapter, or checkout path in startup.
+history and zoxide plus Worktrunk for navigation. Configuration lives as plain
+files in HOME; shell startup does not depend on this source checkout.
+
+```sh
+./bin/dotfiles              # migration wizard; menu after migration
+./bin/dotfiles plan         # inspect the exact destinations without changing them
+./bin/dotfiles migrate --yes
+```
+
+Migration needs Git and Python 3. It preserves existing installed tools and does
+not provision new ones. After migration, open a fresh terminal; if tools are
+missing, run `mise install` outside a project. Use `dotfiles` for status, diffs,
+selective staging, and a commit-message prompt, or use native Git through `config`:
+
+```sh
+config status
+config diff
+config add -- .zshrc
+config commit
+config push -u origin HEAD  # explicitly publish the converted branch
+```
+
+The menu never pushes automatically. See [docs/dotfiles.md](docs/dotfiles.md) for
+the mapping, private-file boundary, restore procedure, and fresh-machine setup.
+The previous `install.sh` cutover remains available for recovery after restoring
+the bare migration; its instructions are retained below as legacy guidance.
+
+## Pi configuration
+
+Public Pi preferences, pinned extensions (including pi-lsp), local subagent
+profiles, and an optional prompt live under [`pi/`](pi/). Pi LSP uses the pinned Python and
+JS/TS servers plus the separate JetBrains Kotlin server. See [`docs/pi.md`](docs/pi.md)
+for installation and the private-state boundary. The bare migration installs
+only the public LSP configuration, profiles, and prompt under `~/.pi/agent`;
+existing settings and authentication remain private. The legacy shell cutover
+does not touch `~/.pi/agent`; tmux is needed only for interactive subagents.
 
 ## What your history supports
 
@@ -75,9 +110,9 @@ shell integration would break automatic directory changes.
 | --- | --- |
 | Login PATH | `.zprofile`, mise shims, and local `.zshpath` capture |
 | Interactive options, completion, highlighting, suggestions, shortcuts | `.zshrc` |
-| Tool versions | Exact pins in `config/mise/config.toml` |
-| Prompt | `config/starship.toml` |
-| History behavior | `config/atuin/config.toml` |
+| Tool versions | Exact pins in `~/.config/mise/config.toml` |
+| Prompt | `~/.config/starship.toml` |
+| History behavior | `~/.config/atuin/config.toml` |
 | Machine-specific launcher paths | Captured `.zshpath`; optional `.zshrc.local` additions |
 | Java/Node versions for a project | That repository's `mise.toml` |
 | Gradle distribution and tasks | That repository's `gradlew` and Gradle configuration |
@@ -89,15 +124,15 @@ function. `ls` and `l` intentionally use eza. Shell integrations use native init
 fzf, Atuin, and Starship, plus the zsh-users highlighting and suggestion scripts.
 
 Support targets are Zsh on macOS and glibc-based Linux, on ARM64 and x86-64.
-The configuration pins all 14 tool versions but lets mise select compatible
+The configuration pins all 17 tool versions but lets mise select compatible
 artifacts for the machine at install time. This avoids carrying platform URLs
 and checksums that can reject an otherwise compatible environment. macOS ARM64
 installation and behavior were exercised locally; Linux and Intel macOS remain
 declared support targets without runtime proof. Windows and Bash are outside
 this draft. No Nerd Font is required by the prompt.
 
-Self-contained means these files do not source Apollo, dotfiles, a Codex plugin,
-or a repository at a fixed path. Fresh provisioning still needs internet access,
+Self-contained means these files do not source Apollo, a retired dotfiles runtime,
+a Codex plugin, or a repository at a fixed path. Fresh provisioning still needs internet access,
 Zsh, Git, Vim, standard OS utilities, mise, and the Zsh packages below. A fully offline machine also needs
 the binaries and native libraries supplied separately; copying configuration
 alone cannot provide those.
@@ -107,9 +142,9 @@ alone cannot provide those.
 The installed Developer Tools 1.0.0 plugin supplies skills, not a shell plugin
 manager or an executable package catalog. Use its `mise-project-tooling`,
 `cli-data-pipelines`, `shell-session-integration`, and `git-change-flow` workflows
-to maintain these native files. Its `cli-creator` skill is useful for a real
-domain CLI such as Kast; recreating a dotfiles management CLI would add the
-complexity this migration removes.
+to maintain these native files. The `dotfiles` command provides migration and
+an optional terminal menu; `config` passes daily repository operations to Git.
+Neither command is a shell startup runtime.
 
 | Job | Use |
 | --- | --- |
@@ -166,7 +201,12 @@ automation should use bounded commands and structured output, without `fzf`.
   explicitly when needed. History databases, encryption keys, and login state
   are not deployed or replaced.
 
-## Try the setup with a reversible cutover
+## Legacy reversible cutover
+
+These are the original checkout-backed evaluation instructions. Use
+[the bare migration](docs/dotfiles.md) for the current workflow. Restore a bare
+migration before running the legacy installer; its snapshot remains available
+when migration transfers an active checkout.
 
 Install the standalone Zsh packages first (on macOS):
 
@@ -197,7 +237,11 @@ startup files. Use `./install.sh restore` to return to the exact pre-activation
 files, then open a fresh terminal. See [docs/cutover.md](docs/cutover.md) for the
 managed paths, drift behavior, and recovery contract.
 
-## Permanent plain-file migration
+## Legacy manual plain-file migration
+
+The original manual-copy procedure is retained for recovery and comparison.
+The current bare Git migration copies the managed files and records their
+HOME-relative paths in one operation; follow [docs/dotfiles.md](docs/dotfiles.md).
 
 1. Install mise 2026.9.1 or newer using its
    [official installation instructions](https://mise.jdx.dev/installing-mise.html).
@@ -301,7 +345,8 @@ exit-code propagation, repeated sourcing, preservation of an existing hook,
 Atuin/fzf bindings, actual PTY typing and Tab completion, suggestion acceptance,
 syntax colors, prompt failure state, quoted navigation/search arguments, a real Worktrunk directory
 switch in a temporary Git repository, and Starship rendering. It does not read
-live credentials or Atuin history. Python 3.11+ is only a verification dependency.
+live credentials or Atuin history. This verification requires Python 3.11+;
+the migration and interactive menu also use Python 3.
 
 The pinned tools were installed with mise 2026.9.1 in a disposable macOS ARM64
 home. The checks passed there. The downloaded mise archive matched the SHA-256
@@ -318,8 +363,9 @@ References: [mise configuration](https://mise.jdx.dev/configuration.html),
 
 ## Prompt iteration
 
-Edit `config/starship.toml` while the checkout is active; Starship reads it for
-each prompt. It is a local extraction of [a3chron/ctp-blue@1.1](https://stellar-hub.vercel.app/a3chron/ctp-blue),
+After bare migration, edit `~/.config/starship.toml` and review it with
+`config diff -- .config/starship.toml`; Starship reads it for each prompt.
+During a legacy checkout cutover, edit `config/starship.toml` instead. It is a local extraction of [a3chron/ctp-blue@1.1](https://stellar-hub.vercel.app/a3chron/ctp-blue),
 the theme selected in Stellar. Its framed layout and module settings are retained:
 shell, memory, and detected languages on top; host, directory, Git, and duration
 in the middle; battery and the input marker below. Failure turns the marker red.
