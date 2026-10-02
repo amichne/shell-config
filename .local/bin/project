@@ -1,0 +1,6 @@
+#!/bin/sh
+# description: Pick a repository or worktree; use p to change this shell's directory.
+# usage: project [--list|--select]
+set -eu
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+exec "$script_dir/shell-tools" project "$@"

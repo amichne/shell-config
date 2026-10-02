@@ -1,0 +1,6 @@
+#!/bin/sh
+# description: View GitHub and Jira work across your account contexts.
+# usage: work [list|accounts|new|review|cleanup] [--help]
+set -eu
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+exec "$script_dir/shell-tools" work "$@"

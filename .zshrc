@@ -22,7 +22,7 @@ if [[ -f ${ZDOTDIR:-$HOME}/.zshrc.local ]]; then
     source "${ZDOTDIR:-$HOME}/.zshrc.local" || { _SHELL_CONFIG_RESULT=$?; return "$_SHELL_CONFIG_RESULT"; }
 fi
 
-export EDITOR=${EDITOR:-vim}
+export EDITOR=${EDITOR:-nvim}
 export VISUAL=${VISUAL:-$EDITOR}
 export PAGER=${PAGER:-less}
 export LESS=${LESS:--FRiX}
@@ -49,6 +49,17 @@ bindkey '^[[A' up-line-or-beginning-search
 bindkey '^[[B' down-line-or-beginning-search
 
 # Package-manager completion directories must be present before compinit.
+_shell_functions="${XDG_CONFIG_HOME:-$HOME/.config}/zsh/functions"
+if [[ -d $_shell_functions ]]; then
+    fpath=("$_shell_functions" $fpath)
+    for _shell_function in "$_shell_functions"/*(.N); do
+        [[ ${_shell_function:t} =~ '^[A-Za-z_][A-Za-z0-9_-]*$' ]] && autoload -Uz -- "${_shell_function:t}"
+    done
+fi
+if [[ -d ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/completions ]]; then
+    fpath=("${XDG_CONFIG_HOME:-$HOME/.config}/zsh/completions" $fpath)
+fi
+unset _shell_functions _shell_function
 for _shell_share in /opt/homebrew/share /usr/local/share /usr/share; do
     for _shell_dir in "$_shell_share/zsh/site-functions" "$_shell_share/zsh-completions"; do
         [[ ! -d $_shell_dir ]] || fpath+=("$_shell_dir")
@@ -57,7 +68,7 @@ done
 autoload -Uz compinit
 # Ignore insecure directories; never disable the security check with compinit -u.
 compinit -i || _SHELL_CONFIG_RESULT=1
-compdef _git config
+compdef _config config
 zmodload zsh/complist
 zstyle ':completion:*' menu select
 zstyle ':completion:*' matcher-list '' 'm:{a-zA-Z}={A-Za-z}'
@@ -71,19 +82,13 @@ alias ls='eza --smart-group --group-directories-first --icons=auto'
 alias l='eza --smart-group --group-directories-first --icons=auto --all'
 alias zs='exec zsh -l'
 alias main='wt switch "^"'
-rr() {
-    local root
-    root=$(git rev-parse --show-toplevel) || return
-    builtin cd -- "$root"
+_shell_keys() {
+    zle -I
+    command keys
+    zle reset-prompt
 }
-f() {
-    if (( $# != 2 )); then
-        print -u2 -- 'usage: f <path> <pattern>'
-        return 2
-    fi
-    command rg -- "$2" "$1"
-}
-
+zle -N _shell_keys
+bindkey '^X?' _shell_keys
 # Native prompt remains usable if an integration fails. Startup still returns
 # failure and reports the exact boundary; another missing tool cannot hide ZLE.
 PROMPT='%F{cyan}%~%f %(?..%F{red}exit:%?%f)\n%# '
@@ -114,6 +119,10 @@ _shell_activate zoxide init zsh
 _shell_activate wt config shell init zsh
 # fzf provides Ctrl-T files, Alt-C directories, and **<Tab> fuzzy completion.
 export FZF_DEFAULT_OPTS=${FZF_DEFAULT_OPTS:---height=40% --layout=reverse --border=rounded}
+export FZF_DEFAULT_COMMAND='fd --type f --hidden --exclude .git'
+export FZF_CTRL_T_COMMAND=$FZF_DEFAULT_COMMAND
+export FZF_ALT_C_COMMAND='fd --type d --hidden --exclude .git'
+export FZF_CTRL_T_OPTS=${FZF_CTRL_T_OPTS:---preview 'bat --color=always --style=numbers --line-range=:200 -- {}' --preview-window=right:50%}
 if [[ -o zle && -t 0 && -t 1 ]]; then
     FZF_CTRL_R_COMMAND='' _shell_activate fzf --zsh
 fi

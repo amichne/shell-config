@@ -1,0 +1,21 @@
+#compdef config
+if (( CURRENT == 2 )); then
+    local -a workflows=('shell:Create or revise shell helpers and public config with Pi')
+    _describe 'configuration workflow' workflows
+    _git "$@"
+    return 0
+fi
+if [[ ${words[2]-} == shell ]]; then
+    if (( CURRENT == 3 )); then
+        local -a workflows
+        workflows=('add:Create a reusable helper with Pi'
+                   'edit:Edit a reusable helper with Pi'
+                   'change:Change public shell configuration with Pi'
+                   'finish:Validate and commit a prepared session')
+        _describe 'configuration workflow' workflows
+    else
+        _files
+    fi
+else
+    _git "$@"
+fi

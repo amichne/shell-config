@@ -1,0 +1,6 @@
+#!/bin/sh
+# description: Search shortcuts and small examples for your terminal tools.
+# usage: keys [shell|nvim|yazi|work] [--list]
+set -eu
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+exec "$script_dir/shell-tools" keys "$@"

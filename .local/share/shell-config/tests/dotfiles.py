@@ -36,6 +36,23 @@ HOME_SOURCES = (
     ("pi/agents/worker.md", ".pi/agent/agents/worker.md"),
     ("pi/agents/researcher.md", ".pi/agent/agents/researcher.md"),
     ("pi/prompts/verify.md", ".pi/agent/prompts/verify.md"),
+    ("bin/shell-tools", ".local/bin/shell-tools"), ("bin/keys", ".local/bin/keys"),
+    ("bin/project", ".local/bin/project"), ("bin/scratch", ".local/bin/scratch"),
+    ("bin/work", ".local/bin/work"), ("bin/review", ".local/bin/review"),
+    ("config/zsh/functions/y", ".config/zsh/functions/y"),
+    ("config/zsh/functions/p", ".config/zsh/functions/p"),
+    ("config/zsh/functions/rr", ".config/zsh/functions/rr"),
+    ("config/zsh/functions/f", ".config/zsh/functions/f"),
+    ("config/zsh/completions/_config", ".config/zsh/completions/_config"),
+    ("config/nvim/init.lua", ".config/nvim/init.lua"),
+    ("config/nvim/lua/editor/options.lua", ".config/nvim/lua/editor/options.lua"),
+    ("config/nvim/lua/editor/keymaps.lua", ".config/nvim/lua/editor/keymaps.lua"),
+    ("config/nvim/lua/editor/lsp.lua", ".config/nvim/lua/editor/lsp.lua"),
+    ("config/nvim/lua/editor/plugins.lua", ".config/nvim/lua/editor/plugins.lua"),
+    ("config/nvim/lua/editor/health.lua", ".config/nvim/lua/editor/health.lua"),
+    ("config/yazi/yazi.toml", ".config/yazi/yazi.toml"),
+    ("config/yazi/keymap.toml", ".config/yazi/keymap.toml"),
+    ("config/work/config.json", ".config/work/config.json"),
 )
 INSTALLED = not (ROOT / ".zshrc").is_file()
 INSTALLED_HOME = ROOT.parents[2] if INSTALLED else None

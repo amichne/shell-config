@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+runtime="$script_dir/../share/shell-config/terminal"
+if [ -f "$script_dir/../terminal/main.py" ]; then runtime="$script_dir/../terminal"; fi
+exec python3 "$runtime/main.py" "$@"

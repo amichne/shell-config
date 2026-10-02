@@ -145,6 +145,14 @@ OPTIONAL = (
     "pi/packages.public.json", "pi/sync-settings.py", "pi/pi-lsp.json",
     "pi/agents/scout.md", "pi/agents/worker.md", "pi/agents/researcher.md",
     "pi/prompts/verify.md",
+    "bin/shell-tools", "bin/keys", "bin/project", "bin/scratch", "bin/work", "bin/review",
+    "terminal/main.py", "terminal/keys.py", "terminal/navigation.py", "terminal/work.py", "terminal/configure.py",
+    "config/zsh/functions/y", "config/zsh/functions/p", "config/zsh/functions/rr", "config/zsh/functions/f", "config/zsh/completions/_config",
+    "config/nvim/init.lua", "config/nvim/lua/editor/options.lua", "config/nvim/lua/editor/keymaps.lua",
+    "config/nvim/lua/editor/lsp.lua", "config/nvim/lua/editor/plugins.lua", "config/nvim/lua/editor/health.lua",
+    "config/yazi/yazi.toml", "config/yazi/keymap.toml", "config/work/config.json",
+    "pi/shell-context.md", "docs/terminal.md", "docs/editor.md", "docs/work.md", "docs/config-shell.md",
+    "tests/helpers.py", "tests/editor.py", "tests/work.py", "tests/configure.py",
 )
 
 

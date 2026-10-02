@@ -1,5 +1,11 @@
 # A smaller shell setup
 
+Daily tools now include a Neovim/FFF/WhichKey setup, Yazi through `y`, searchable
+shortcut help through `keys`, project navigation through `p`, private `scratch`
+notes, a multi-account GitHub/Jira `work` panel, ephemeral PR `review`, and
+Pi-assisted `config shell` changes with verified local commits. See
+[the terminal guide](docs/terminal.md) for commands and account setup.
+
 Manage the public configuration with a bare Git repository at `~/.cfg` and
 `$HOME` as its working tree, following
 [Atlassian's dotfiles pattern](https://www.atlassian.com/git/tutorials/dotfiles).
@@ -124,7 +130,7 @@ function. `ls` and `l` intentionally use eza. Shell integrations use native init
 fzf, Atuin, and Starship, plus the zsh-users highlighting and suggestion scripts.
 
 Support targets are Zsh on macOS and glibc-based Linux, on ARM64 and x86-64.
-The configuration pins all 17 tool versions but lets mise select compatible
+The configuration pins tool versions but lets mise select compatible
 artifacts for the machine at install time. This avoids carrying platform URLs
 and checksums that can reject an otherwise compatible environment. macOS ARM64
 installation and behavior were exercised locally; Linux and Intel macOS remain

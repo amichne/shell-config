@@ -1,0 +1,7 @@
+# description: Jump to a repository or worktree using the project picker.
+# usage: p [SEARCH]
+emulate -L zsh
+local chosen
+chosen=$(command project --select "$@") || return
+[[ -n "$chosen" ]] || return 1
+builtin cd -- "$chosen"

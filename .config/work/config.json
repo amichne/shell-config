@@ -1,0 +1,8 @@
+{
+  "type": "WORK_CONFIG",
+  "version": 1,
+  "accounts": [],
+  "repositories": [],
+  "jira": {"project": ""},
+  "editor": ["nvim"]
+}

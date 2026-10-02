@@ -1,0 +1,7 @@
+# Keep Yazi's native file operations, fd/rg search, fzf/zoxide jumps, and key hints.
+[mgr]
+show_hidden = true
+sort_by = "natural"
+sort_dir_first = true
+
+# EDITOR is the default edit opener. Shell integration sets it to nvim.

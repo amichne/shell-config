@@ -1,0 +1,16 @@
+# description: Browse files with Yazi; q changes this shell's directory, Q keeps it.
+# usage: y [PATH]
+emulate -L zsh
+local cwd_file chosen result
+cwd_file=$(mktemp "${TMPDIR:-/tmp}/yazi-cwd.XXXXXXXX") || return
+{
+    command yazi "$@" --cwd-file="$cwd_file"
+    result=$?
+    (( result == 0 )) || return "$result"
+    chosen=$(<"$cwd_file")
+    if [[ -n "$chosen" && "$chosen" != "$PWD" ]]; then
+        builtin cd -- "$chosen" || return
+    fi
+} always {
+    command rm -f -- "$cwd_file"
+}

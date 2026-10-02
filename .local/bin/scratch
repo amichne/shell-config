@@ -1,0 +1,6 @@
+#!/bin/sh
+# description: Open a persistent scratch note or an ephemeral editor buffer.
+# usage: scratch [NAME] [--temp]
+set -eu
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+exec "$script_dir/shell-tools" scratch "$@"
