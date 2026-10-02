@@ -1,0 +1,28 @@
+#!/bin/sh
+# description: Print the PID and command listening on a TCP port.
+# usage: port-owner <port> | --help
+
+usage() {
+    printf 'Usage: port-owner <port> | --help\n'
+}
+
+if [ "$#" -eq 1 ] && [ "$1" = "--help" ]; then
+    usage
+    exit 0
+fi
+
+if [ "$#" -ne 1 ] || ! printf '%s' "$1" | grep -Eq '^[0-9]+$'; then
+    usage >&2
+    exit 2
+fi
+
+port=$1
+# Strip leading zeroes without arithmetic overflow; then bound the decimal form.
+port=$(printf '%s' "$port" | sed 's/^0*//')
+[ -n "$port" ] || port=0
+if [ "${#port}" -gt 5 ] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    usage >&2
+    exit 2
+fi
+
+lsof -nP -iTCP:"$port" -sTCP:LISTEN -F pc
