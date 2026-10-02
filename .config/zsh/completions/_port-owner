@@ -1,12 +1,14 @@
 #compdef port-owner
 
-# Complete supported ports and help without invoking the command.
-local -a ports
-ports=(
-  '--help:Show help'
-  '3000:TCP port'
-  '5173:TCP port'
-  '8080:TCP port'
-  '5432:TCP port'
-)
-_describe 'port-owner argument' ports
+# Complete the optional help flag or a common TCP port without running commands.
+if (( CURRENT == 2 )); then
+  local -a ports
+  ports=(
+    '--help:Show help'
+    '3000:TCP port'
+    '5173:TCP port'
+    '8080:TCP port'
+    '5432:TCP port'
+  )
+  _describe 'port-owner argument' ports
+fi
