@@ -13,6 +13,8 @@ config shell add --name project-root --kind function "Change to the Git root"
 config shell edit project-root
 config shell change "Hide the blank prompt line" --paths .config/starship.toml
 config shell change "Adjust my shell and prompt configuration"
+config shell completion port-owner "Suggest --help and common TCP ports"
+config shell completion future-tool
 ```
 
 Use a command in `~/.local/bin` for an independent process. Use an autoloaded
@@ -29,6 +31,39 @@ name a new public configuration file. Each candidate remains bounded by the
 selected paths, even if you ask Pi to expand the request during the session.
 Start another session to expand that scope.
 
+Keep all custom Zsh completions in `~/.config/zsh/completions/`. Each ordinary
+`_COMMAND` file begins with `#compdef COMMAND`; the directory is already on
+`fpath` before `compinit` and takes precedence over system completion files.
+You can edit these files directly and run `zs` to load them in a fresh shell.
+There is no separate registry to update.
+
+For example, create `~/.config/zsh/completions/_my-tool` with:
+
+```zsh
+#compdef my-tool
+_arguments \
+  '--help[Show usage]' \
+  '--verbose[Show detailed output]'
+```
+
+Run `zs`, then type `my-tool --` and press Tab.
+
+`config shell completion COMMAND [REQUEST...]` is the optional Pi creation and
+maintenance flow for that same location. It permits declarative registrations
+for installed CLIs, aliases, shell functions, project tools, and future commands.
+Names support digits, uppercase letters, underscores, dots, plus signs, and
+hyphens. A tracked handler can be edited; an existing untracked handler is
+preserved and rejected until you explicitly review and track it.
+
+Completion proposals require the exact `#compdef` registration and bounded
+`COMPLETION_SMOKE` checks. A check supplies completed argument words, the current
+word prefix, and expected or excluded candidates. The finisher loads real
+`compinit`, invokes a real ZLE completion widget, and captures native matches
+for that command and input. It never executes the typed command line. This
+proves the asserted handler behavior in a disposable HOME without a project,
+personal history, or user completion styles; it does not prove every dynamic
+completion against every local project.
+
 Allowed configuration includes `.zshrc`, `.zprofile`, public Starship/AI/prompt
 files, and supported text configuration under `.config/mise`, `atuin`, `nvim`,
 `yazi`, `work`, `worktrunk`, and `ghostty`. Documentation stays under
@@ -37,6 +72,10 @@ Authentication, credentials, histories, caches, sessions, state, private/local
 files, Pi account data, runtime implementation files, and protected commands
 such as `config` are excluded. A public path is an authorization boundary, not
 proof that arbitrary file contents contain no secrets.
+
+Completion handler code has its own public namespace: a target named `auth-tool`
+or `foo.local` does not turn its `_COMMAND` handler into a credential file.
+Parent-directory, symlink, scope, and ownership checks still apply.
 
 Pi runs with automatic extensions, skills, prompt templates, and context-file
 discovery disabled. Its maintained instructions and the selected architecture

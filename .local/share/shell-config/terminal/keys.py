@@ -44,6 +44,7 @@ STARTERS = (
     Shortcut('shell', 'rr', 'Enter the current repository root'),
     Shortcut('shell', 'project / p', 'Pick a repository or worktree; p enters it'),
     Shortcut('shell', 'config shell add', 'Create, validate, install and commit a helper with Pi'),
+    Shortcut('shell', 'config shell completion', 'Create or update a handler in the shared Zsh completion directory'),
     Shortcut('shell', 'config shell change', 'Change public configuration with Pi'),
     Shortcut('yazi', 'F1 / ~', 'Show full contextual help'),
     Shortcut('yazi', 's', 'Search filenames with fd'),

@@ -10,9 +10,12 @@ if [[ ${words[2]-} == shell ]]; then
         local -a workflows
         workflows=('add:Create a reusable helper with Pi'
                    'edit:Edit a reusable helper with Pi'
+                   'completion:Create or update a Zsh completion handler with Pi'
                    'change:Change public shell configuration with Pi'
                    'finish:Validate and commit a prepared session')
         _describe 'configuration workflow' workflows
+    elif [[ ${words[3]-} == completion ]] && (( CURRENT == 4 )); then
+        _command_names
     else
         _files
     fi

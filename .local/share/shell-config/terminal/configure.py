@@ -10,8 +10,11 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import pty
 import re
+import select
 import selectors
+import shlex
 import shutil
 import signal
 import stat
@@ -89,6 +92,7 @@ class PublicPath:
 class Kind(Enum):
     COMMAND = "COMMAND"
     FUNCTION = "FUNCTION"
+    COMPLETION = "COMPLETION"
     CONFIG = "CONFIG"
     DOCUMENT = "DOCUMENT"
 
@@ -174,7 +178,21 @@ class Change:
     paths: tuple[PublicPath, ...]
 
 
-Intent = Add | Edit | Change
+@dataclass(frozen=True)
+class CompletionCommand:
+    value: str
+
+
+@dataclass(frozen=True)
+class Completion:
+    command: CompletionCommand
+
+    @property
+    def path(self) -> PublicPath:
+        return PublicPath(PurePosixPath(".config/zsh/completions", "_" + self.command.value))
+
+
+Intent = Add | Edit | Change | Completion
 
 
 @dataclass(frozen=True)
@@ -220,10 +238,29 @@ class Smoke:
 
 
 @dataclass(frozen=True)
+class CompletionExpectation:
+    contains: tuple[str, ...]
+    excludes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CompletionSmoke:
+    path: PublicPath
+    args: tuple[str, ...]
+    prefix: str
+    expect: CompletionExpectation
+
+
+@dataclass(frozen=True)
+class CompletionMatches:
+    candidates: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Proposal:
     summary: str
     paths: tuple[PublicPath, ...]
-    checks: tuple[Smoke, ...]
+    checks: tuple[Smoke | CompletionSmoke, ...]
 
 
 @dataclass(frozen=True)
@@ -241,6 +278,7 @@ class ProcessResult:
 
 
 NAME = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
+COMPLETION_COMMAND = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,127}\Z")
 OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 IDENTIFIER = re.compile(r"[0-9a-f]{32}\Z")
@@ -254,7 +292,7 @@ CONFIG_ROOTS = frozenset({"mise", "atuin", "nvim", "yazi", "work", "worktrunk", 
 PRIVATE_COMPONENT = re.compile(r"(?:\A|[._-])(?:auth|credentials?|secrets?|tokens?|history|cache|sessions?|trust|state|private|local)(?:[._-]|\Z)", re.I)
 FORMATS = frozenset({".toml", ".json", ".lua", ".py", ".sh", ".bash", ".zsh", ".vim", ".conf", ".ini"})
 REFERENCES = (".zshrc", ".zprofile", ".config/mise/config.toml", ".config/starship.toml",
-              ".config/atuin/config.toml", ".config/ai/config.json")
+              ".config/atuin/config.toml", ".config/ai/config.json", ".config/zsh/completions/_config")
 
 
 def digest(data: bytes) -> str:
@@ -314,6 +352,10 @@ def public_path(raw: object, stage: Stage = Stage.PREFLIGHT) -> PublicPath | Fai
     relative = PurePosixPath(raw)
     if relative.is_absolute() or str(relative) != raw or ".." in relative.parts or "\\" in raw:
         return Failure(stage, Reason.OUT_OF_SCOPE)
+    if len(relative.parts) == 4 and relative.parts[:3] == (".config", "zsh", "completions") and relative.name.startswith("_") and COMPLETION_COMMAND.fullmatch(relative.name[1:]):
+        # Handler code is a public namespace; command names such as auth.local
+        # are registrations, not credential files or private configuration.
+        return PublicPath(relative)
     if any(part != ".local" and PRIVATE_COMPONENT.search(part) or part.startswith(".") and part not in {
             ".config", ".local", ".zshrc", ".zprofile"} for part in relative.parts):
         return Failure(stage, Reason.PRIVATE_PATH)
@@ -337,6 +379,8 @@ def kind_of(path: PublicPath) -> Kind:
         return Kind.COMMAND
     if raw.startswith(".config/zsh/functions/"):
         return Kind.FUNCTION
+    if raw.startswith(".config/zsh/completions/"):
+        return Kind.COMPLETION
     if raw.startswith(".local/share/shell-config/docs/"):
         return Kind.DOCUMENT
     return Kind.CONFIG
@@ -440,6 +484,10 @@ def collision(home: Path, name: str) -> Passed | Failure:
 
 
 def selected_intent(home: Path, args: argparse.Namespace) -> Intent | Failure:
+    if args.action == "completion":
+        if not COMPLETION_COMMAND.fullmatch(args.command):
+            return Failure(Stage.PREFLIGHT, Reason.INVALID_ARGUMENT)
+        return Completion(CompletionCommand(args.command))
     if args.action == "add":
         if args.name:
             rejected = collision(home, args.name)
@@ -491,6 +539,8 @@ def intent_json(intent: Intent) -> dict:
             return {"type": "EDIT", "path": str(path)}
         case Change(paths):
             return {"type": "CHANGE", "paths": [str(path) for path in paths]}
+        case Completion(command):
+            return {"type": "COMPLETION", "command": command.value}
 
 
 def encoded(value: object) -> bytes:
@@ -542,7 +592,7 @@ def write_receipt(session: Session, receipt: Receipt) -> None:
 
 
 def prepare(repository: Repository, intent: Intent, request: str) -> Session | Failure:
-    selected = (intent.path,) if isinstance(intent, Edit) else intent.paths if isinstance(intent, Change) else ()
+    selected = (intent.path,) if isinstance(intent, (Edit, Completion)) else intent.paths if isinstance(intent, Change) else ()
     snapshots = []
     total = 0
     for path in selected:
@@ -699,6 +749,8 @@ def load_session(home: Path, identifier: str) -> tuple[Session, Receipt] | Failu
         if any(isinstance(path, Failure) for path in paths) or len(set(paths)) != len(paths):
             return Failure(Stage.SESSION, Reason.INVALID_SESSION)
         intent = Change(paths)
+    elif exact(raw_intent, {"type", "command"}) and raw_intent["type"] == "COMPLETION" and isinstance(raw_intent["command"], str) and COMPLETION_COMMAND.fullmatch(raw_intent["command"]):
+        intent = Completion(CompletionCommand(raw_intent["command"]))
     else:
         return Failure(Stage.SESSION, Reason.INVALID_SESSION)
     if not isinstance(value["files"], list) or len(value["files"]) > MAX_FILES:
@@ -711,7 +763,7 @@ def load_session(home: Path, identifier: str) -> tuple[Session, Receipt] | Failu
         if isinstance(path, Failure) or isinstance(before, Failure):
             return Failure(Stage.SESSION, Reason.INVALID_SESSION)
         snapshots.append(Snapshot(path, before))
-    expected_paths = () if isinstance(intent, Add) else (intent.path,) if isinstance(intent, Edit) else intent.paths
+    expected_paths = () if isinstance(intent, Add) else (intent.path,) if isinstance(intent, (Edit, Completion)) else intent.paths
     if tuple(item.path for item in snapshots) != expected_paths:
         return Failure(Stage.SESSION, Reason.INVALID_SESSION)
     repository = Repository(home, home / ".cfg", value["head"], value["ref"], value["index_sha256"], value["index_mode"])
@@ -749,6 +801,9 @@ def parse_proposal(session: Session) -> Proposal | Failure:
         case Edit(path):
             if paths != (path,):
                 return Failure(Stage.PROPOSAL, Reason.OUT_OF_SCOPE)
+        case Completion() as intent:
+            if paths != (intent.path,):
+                return Failure(Stage.PROPOSAL, Reason.OUT_OF_SCOPE)
         case Change(selected):
             if not set(paths) <= set(selected):
                 return Failure(Stage.PROPOSAL, Reason.OUT_OF_SCOPE)
@@ -756,6 +811,28 @@ def parse_proposal(session: Session) -> Proposal | Failure:
         return Failure(Stage.PROPOSAL, Reason.INVALID_PROPOSAL)
     checks = []
     for raw in value["checks"]:
+        if isinstance(raw, dict) and raw.get("type") == "COMPLETION_SMOKE":
+            if not exact(raw, {"type", "path", "args", "prefix", "expect"}):
+                return Failure(Stage.PROPOSAL, Reason.INVALID_PROPOSAL)
+            path = public_path(raw["path"], Stage.PROPOSAL)
+            if isinstance(path, Failure) or path not in paths or kind_of(path) != Kind.COMPLETION:
+                return Failure(Stage.PROPOSAL, Reason.INVALID_PROPOSAL)
+            if not isinstance(raw["args"], list) or len(raw["args"]) > 16 or any(not isinstance(arg, str) or len(arg) > 256 or any(ord(c) < 32 for c in arg) for arg in raw["args"]):
+                return Failure(Stage.PROPOSAL, Reason.INVALID_PROPOSAL)
+            if not isinstance(raw["prefix"], str) or len(raw["prefix"]) > 128 or any(ord(c) < 32 for c in raw["prefix"]):
+                return Failure(Stage.PROPOSAL, Reason.INVALID_PROPOSAL)
+            expect = raw["expect"]
+            if not exact(expect, {"type", "contains", "excludes"}) or expect["type"] != "CANDIDATES":
+                return Failure(Stage.PROPOSAL, Reason.INVALID_PROPOSAL)
+            for key in ("contains", "excludes"):
+                if not isinstance(expect[key], list) or len(expect[key]) > 32 or any(not isinstance(item, str) or not 0 < len(item) <= 256 or any(ord(c) < 32 for c in item) for item in expect[key]):
+                    return Failure(Stage.PROPOSAL, Reason.INVALID_PROPOSAL)
+                if len(set(expect[key])) != len(expect[key]):
+                    return Failure(Stage.PROPOSAL, Reason.INVALID_PROPOSAL)
+            if not expect["contains"] or set(expect["contains"]) & set(expect["excludes"]):
+                return Failure(Stage.PROPOSAL, Reason.INVALID_PROPOSAL)
+            checks.append(CompletionSmoke(path, tuple(raw["args"]), raw["prefix"], CompletionExpectation(tuple(expect["contains"]), tuple(expect["excludes"]))))
+            continue
         if not exact(raw, {"type", "path", "args", "expect"}) or not isinstance(raw["type"], str) or raw["type"] not in {"COMMAND_SMOKE", "FUNCTION_SMOKE"}:
             return Failure(Stage.PROPOSAL, Reason.INVALID_PROPOSAL)
         path = public_path(raw["path"], Stage.PROPOSAL)
@@ -774,7 +851,7 @@ def parse_proposal(session: Session) -> Proposal | Failure:
             return Failure(Stage.PROPOSAL, Reason.INVALID_PROPOSAL)
         checks.append(Smoke(kind_of(path), path, tuple(raw["args"]), expected))
     for path in paths:
-        if kind_of(path) in {Kind.COMMAND, Kind.FUNCTION} and not any(check.path == path for check in checks):
+        if kind_of(path) in {Kind.COMMAND, Kind.FUNCTION, Kind.COMPLETION} and not any(check.path == path for check in checks):
             return Failure(Stage.PROPOSAL, Reason.INVALID_PROPOSAL)
     return Proposal(value["summary"], paths, tuple(checks))
 
@@ -847,6 +924,9 @@ def candidates(session: Session, proposal: Proposal) -> tuple[Candidate, ...] | 
                 for header in ("description", "usage"):
                     if not re.search(r"^# " + header + r": [^\r\n]{1,160}$", text, re.M):
                         return Failure(Stage.PROPOSAL, Reason.INVALID_CANDIDATE)
+            if kind_of(parsed) == Kind.COMPLETION and parsed in proposal.paths:
+                if not text.splitlines() or text.splitlines()[0] != "#compdef " + parsed.relative.name[1:]:
+                    return Failure(Stage.PROPOSAL, Reason.INVALID_CANDIDATE)
             state = RegularFile(digest(data), mode)
             if parsed in proposal.paths:
                 if state == before:
@@ -924,6 +1004,139 @@ def checked(command: list[str], env: dict[str, str], cwd: Path, reason: Reason) 
     return PASSED if result.code == 0 else Failure(Stage.VALIDATE, reason)
 
 
+def probe_completion(handler: Path, command: str, args: tuple[str, ...],
+                     prefix: str) -> CompletionMatches | Failure:
+    """Observe real ZLE matches in a fresh HOME; never execute the typed line."""
+    if not isinstance(command, str) or not COMPLETION_COMMAND.fullmatch(command):
+        return Failure(Stage.VALIDATE, Reason.INVALID_ARGUMENT)
+    if not isinstance(args, tuple) or len(args) > 16 or any(not isinstance(arg, str) or len(arg) > 256 or any(ord(c) < 32 for c in arg) for arg in args):
+        return Failure(Stage.VALIDATE, Reason.INVALID_ARGUMENT)
+    if not isinstance(prefix, str) or len(prefix) > 128 or any(ord(c) < 32 for c in prefix):
+        return Failure(Stage.VALIDATE, Reason.INVALID_ARGUMENT)
+    executable = shutil.which("zsh")
+    if executable is None:
+        return Failure(Stage.VALIDATE, Reason.MISSING_TOOL)
+    if not handler.is_file() or handler.is_symlink() or handler.stat().st_size > MAX_FILE_BYTES:
+        return Failure(Stage.VALIDATE, Reason.INVALID_CANDIDATE)
+    try:
+        data = handler.read_bytes()
+        text = data.decode("utf-8")
+        if not text.splitlines() or text.splitlines()[0] != "#compdef " + command:
+            return Failure(Stage.VALIDATE, Reason.INVALID_CANDIDATE)
+        with tempfile.TemporaryDirectory(prefix="shell completion probe ") as directory:
+            root = Path(directory)
+            home = root / "home"
+            completion_directory = home / ".config/zsh/completions"
+            completion_directory.mkdir(parents=True, mode=0o700)
+            target = completion_directory / ("_" + command)
+            target.write_bytes(data)
+            target.chmod(0o644)
+            capture = root / "matches"
+            script = root / "probe.zsh"
+            script.write_text(COMPLETION_PROBE_SCRIPT)
+            # Completed words and the current prefix remain shell words. They
+            # enter BUFFER as data and no accept-line widget is ever invoked.
+            buffer = shlex.join((command, *args)) + " " + (shlex.quote(prefix) if prefix else "")
+            env = {"HOME": str(home), "ZDOTDIR": str(home), "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                   "XDG_CONFIG_HOME": str(home / ".config"), "XDG_DATA_HOME": str(home / ".local/share"),
+                   "XDG_STATE_HOME": str(home / ".local/state"), "XDG_CACHE_HOME": str(home / ".cache"),
+                   "LC_ALL": "C", "TERM": "xterm-256color", "SC_PROBE_DIRECTORY": str(completion_directory),
+                   "SC_PROBE_COMMAND": command, "SC_PROBE_HANDLER": "_" + command,
+                   "SC_PROBE_BUFFER": buffer, "SC_PROBE_CAPTURE": str(capture)}
+            syntax = checked([executable, "-n", str(target)], env, root, Reason.SYNTAX_FAILED)
+            if isinstance(syntax, Failure):
+                return syntax
+            pid, terminal = pty.fork()
+            if pid == 0:
+                os.chdir(root)
+                os.execve(executable, [executable, "-f", "-i"], env)
+                os._exit(127)
+            transcript = bytearray()
+            ready = False
+            complete = False
+            deadline = time.monotonic() + 10
+            try:
+                os.write(terminal, ("source " + shlex.quote(str(script)) + "\n").encode())
+                while time.monotonic() < deadline and len(transcript) <= MAX_PROCESS_BYTES:
+                    if not select.select([terminal], [], [], 0.1)[0]:
+                        continue
+                    try:
+                        chunk = os.read(terminal, 4096)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    transcript.extend(chunk)
+                    if b"SC_PROBE_REGISTRATION_FAILED" in transcript:
+                        break
+                    if not ready and b"SC_PROBE_READY" in transcript:
+                        ready = True
+                        os.write(terminal, b"\x18")
+                    if b"SC_PROBE_DONE" in transcript:
+                        complete = True
+                        break
+            finally:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                os.close(terminal)
+                os.waitpid(pid, 0)
+            if not ready or not complete or len(transcript) > MAX_PROCESS_BYTES or not capture.is_file() or capture.is_symlink() or capture.stat().st_size > MAX_PROCESS_BYTES:
+                return Failure(Stage.VALIDATE, Reason.BEHAVIOR_FAILED)
+            raw_candidates = tuple(item.decode("utf-8") for item in capture.read_bytes().split(b"\0") if item)
+            if len(raw_candidates) > 512 or any(len(item) > 1024 or any(ord(c) < 32 for c in item) for item in raw_candidates):
+                return Failure(Stage.VALIDATE, Reason.BEHAVIOR_FAILED)
+            return CompletionMatches(tuple(dict.fromkeys(raw_candidates)))
+    except (OSError, UnicodeError):
+        return Failure(Stage.VALIDATE, Reason.BEHAVIOR_FAILED)
+
+
+COMPLETION_PROBE_SCRIPT = r'''
+unsetopt beep
+PROMPT=''
+RPROMPT=''
+fpath=("$SC_PROBE_DIRECTORY" $fpath)
+autoload -Uz compinit
+compinit -D -i || exit 91
+if [[ ${_comps[$SC_PROBE_COMMAND]-} != "$SC_PROBE_HANDLER" ]]; then
+    builtin print -r -- SC_PROBE_REGISTRATION_FAILED
+    exit 92
+fi
+zstyle ':completion:*' completer _complete
+zstyle ':completion:*' matcher-list ''
+function compadd() {
+    local -a _shell_config_probe_native_matches
+    local -i _shell_config_probe_count_before=${compstate[nmatches]:-0}
+    local -i _shell_config_probe_add_result
+    builtin compadd "$@"
+    _shell_config_probe_add_result=$?
+    # Query-only -A/-O/-D calls must retain their caller-visible array effects
+    # and cannot serve as evidence of suggestions offered by the widget.
+    if (( ${compstate[nmatches]:-0} > _shell_config_probe_count_before )); then
+        builtin compadd -A _shell_config_probe_native_matches "$@"
+        if (( ${#_shell_config_probe_native_matches} )); then
+            builtin print -rN -- "${_shell_config_probe_native_matches[@]}" >> "$SC_PROBE_CAPTURE"
+        fi
+    fi
+    return $_shell_config_probe_add_result
+}
+function _shell_config_probe_widget() {
+    BUFFER=$SC_PROBE_BUFFER
+    CURSOR=${#BUFFER}
+    : > "$SC_PROBE_CAPTURE"
+    zle complete-word
+    BUFFER=''
+    CURSOR=0
+    builtin print -r -- SC_PROBE_DONE
+    zle redisplay
+}
+zle -N _shell_config_probe_widget
+bindkey '^X' _shell_config_probe_widget
+builtin print -r -- SC_PROBE_READY
+'''
+
+
 def validate(session: Session, proposal: Proposal, changes: tuple[Candidate, ...]) -> Passed | Failure:
     with tempfile.TemporaryDirectory(prefix="validation-", dir=session.directory) as directory:
         sandbox = Path(directory)
@@ -944,7 +1157,7 @@ def validate(session: Session, proposal: Proposal, changes: tuple[Candidate, ...
             text = candidate.data.decode()
             suffix = candidate.path.relative.suffix
             shell = ""
-            if kind == Kind.FUNCTION or str(candidate.path) in {".zshrc", ".zprofile"} or suffix == ".zsh":
+            if kind in {Kind.FUNCTION, Kind.COMPLETION} or str(candidate.path) in {".zshrc", ".zprofile"} or suffix == ".zsh":
                 shell = "zsh"
             elif suffix in {".sh", ".bash"}:
                 shell = "bash" if suffix == ".bash" else "sh"
@@ -1008,6 +1221,14 @@ def validate(session: Session, proposal: Proposal, changes: tuple[Candidate, ...
             event(Stage.VALIDATE, "SYNTAX_VERIFIED", count=1)
         for check in proposal.checks:
             target = validation_home / str(check.path)
+            if isinstance(check, CompletionSmoke):
+                observed = probe_completion(target, check.path.relative.name[1:], check.args, check.prefix)
+                if isinstance(observed, Failure):
+                    return observed
+                if not set(check.expect.contains) <= set(observed.candidates) or set(check.expect.excludes) & set(observed.candidates):
+                    return Failure(Stage.VALIDATE, Reason.BEHAVIOR_FAILED)
+                event(Stage.VALIDATE, "COMPLETION_VERIFIED", count=1)
+                continue
             if check.kind == Kind.COMMAND:
                 command = [str(target), *check.args]
             else:
@@ -1292,6 +1513,9 @@ def run(argv: list[str]) -> int:
     change = commands.add_parser("change", help="Open Pi to change selected public configuration")
     change.add_argument("request", nargs="+")
     change.add_argument("--paths", nargs="+", help="Explicit HOME-relative configuration paths")
+    completion = commands.add_parser("completion", help="Create or revise a Zsh completion handler with Pi")
+    completion.add_argument("command", help="Command, alias, or function name to register")
+    completion.add_argument("request", nargs="*")
     final = commands.add_parser("finish", help="Validate and commit a prepared successful Pi session")
     final.add_argument("session")
     try:

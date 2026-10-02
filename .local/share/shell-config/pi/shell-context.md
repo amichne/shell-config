@@ -47,10 +47,52 @@ The supported checks include Zsh/sh/bash syntax, ShellCheck for sh/bash, Python
 compilation, TOML and JSON parsing, Lua compilation through `luac` or Neovim,
 and Ghostty's configuration validator. Unsupported formats fail closed.
 
+For `completion`, create or revise exactly the handler named in the request:
+`candidates/.config/zsh/completions/_COMMAND`, with mode 0644. This canonical
+directory is already on the shell's `fpath` before `compinit`; use ordinary Zsh
+completion code and no separate registration file. The first line must be
+exactly `#compdef COMMAND`, with that command's case and punctuation preserved.
+Command names can include digits, uppercase letters, underscores, dots, plus
+signs, and hyphens. A command, alias, project tool, or future executable may have
+a declarative completion handler even if it is not currently installed.
+
+Read the provided `_config` reference for an existing example. Describe optional
+CLI assumptions honestly; do not execute an unknown target to prove registration.
+Existing tracked handlers are copied into candidates for editing; an unrelated
+untracked handler must first be reviewed and admitted to Git outside this flow.
+Keep handlers harmless: completion should provide suggestions, never perform the
+command's action. Use `_arguments`, `_describe`, `_values`, or `compadd` normally.
+Include at least one `COMPLETION_SMOKE` check with exact keys:
+
+```json
+{
+  "type": "COMPLETION_SMOKE",
+  "path": ".config/zsh/completions/_future-tool",
+  "args": ["group"],
+  "prefix": "al",
+  "expect": {
+    "type": "CANDIDATES",
+    "contains": ["alpha", "alpine"],
+    "excludes": ["bravo"]
+  }
+}
+```
+
+`args` contains completed words after the command, and `prefix` is the partial
+current word. Every completion check requires at least one expected candidate;
+`excludes` may be empty. The finisher uses real `compinit` and a real ZLE widget
+in a disposable HOME, checks that the handler registers for the exact command,
+and collects native `compadd` matches. It never accepts or executes the typed
+command line. Tests use up to 16 argument words, a 128-character prefix, and
+up to 32 candidates in each assertion list. No shell test script field exists.
+The probe has no project, user history, or personal completion styles; make the
+checked candidate behavior work in that bounded context. Leave the probe's
+private state alone; it is wrapper instrumentation, not handler output.
+
 When the work is ready to install and commit, write `proposal.json` in this
 workspace with exactly four keys. Its `CHANGESET` type is an explicit finish
 intent. `paths` lists every changed candidate, using exact HOME-relative paths.
-`summary` is a single line of at most 120 characters. `checks` lists helper
+`summary` is a single line of at most 120 characters. `checks` lists helper or completion
 behavior checks, or is empty for configuration/document changes:
 
 ```json

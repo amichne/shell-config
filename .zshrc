@@ -66,8 +66,8 @@ for _shell_share in /opt/homebrew/share /usr/local/share /usr/share; do
     done
 done
 autoload -Uz compinit
-# Ignore insecure directories; never disable the security check with compinit -u.
-compinit -i || _SHELL_CONFIG_RESULT=1
+# Audit directories and rescan registrations so handler renames stay current.
+compinit -i -D || _SHELL_CONFIG_RESULT=1
 compdef _config config
 zmodload zsh/complist
 zstyle ':completion:*' menu select

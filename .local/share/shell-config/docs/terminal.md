@@ -16,6 +16,7 @@ an explicitly set `EDITOR`/`VISUAL` or `.zshrc.local` can choose another editor.
 | `work` | GitHub/Jira queue and review actions |
 | `review PR_URL` | Open a PR in an owned detached review worktree |
 | `config shell add "request"` | Pi-assisted reusable helper |
+| `config shell completion COMMAND "request"` | Create or update that command's Zsh completion |
 | `config shell change "request"` | Pi-assisted public configuration change |
 
 At the prompt, `Ctrl-X`, then `?` opens `keys`. Neovim's `Space` prefix shows
@@ -25,6 +26,13 @@ installed helper scripts/functions. Neovim help reads actual described mappings
 from your current configuration. Work panel help shares its action definitions.
 Yazi entries are a small curated list of upstream defaults; native help is the
 authority for every mapping.
+
+Keep custom Zsh completions together in `~/.config/zsh/completions/`, one
+`_command` file per command, beginning with `#compdef command`. The directory
+already precedes packaged completions in `fpath`; `compinit` rescans handler
+registrations on shell startup. Add files directly with your editor or use `config shell completion`
+to let Pi maintain a handler and commit it. Run `zs` to load new registrations;
+manual additions enter Git with `config add -f -- .config/zsh/completions/_command`.
 
 `fd` provides fzf's file/directory candidates, respecting ignore rules and
 excluding `.git`. Atuin owns `Ctrl-R`, fzf owns `Ctrl-T`/`Alt-C`, and the prompt

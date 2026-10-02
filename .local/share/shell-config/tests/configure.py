@@ -46,10 +46,12 @@ class ConfigureTest(unittest.TestCase):
         self.write(".config/starship.toml", 'add_newline = true\n')
         self.write(".config/atuin/config.toml", 'style = "compact"\n')
         self.write(".config/zsh/functions/existing", '# description: Existing helper\nprint -r -- existing\n')
+        self.write(".config/zsh/completions/_existing-completion", '#compdef existing-completion\ncompadd -- old\n')
         self.write(".local/bin/existing-command", '#!/bin/sh\n# description: Existing helper\nprintf "existing\\n"\n', 0o755)
         self.write(".gitignore", "*\n!*/\n")
         self.git("add", "--force", "--", ".zshrc", ".zprofile", ".config/starship.toml",
-                 ".config/atuin/config.toml", ".config/zsh/functions/existing", ".local/bin/existing-command", ".gitignore")
+                 ".config/atuin/config.toml", ".config/zsh/functions/existing", ".config/zsh/completions/_existing-completion",
+                 ".local/bin/existing-command", ".gitignore")
         self.git("commit", "-m", "initial public configuration")
         self.head = self.git("rev-parse", "HEAD").strip()
         self.write(".config/atuin/config.toml", 'style = "compact"\n# unrelated staged edit\n')
@@ -455,6 +457,60 @@ class ConfigureTest(unittest.TestCase):
         self.assertIn("BUSY", result["stderr"])
         self.assert_untouched()
 
+    def test_completion_for_future_dotted_command_proves_native_candidates(self):
+        result = self.run_cli("completion", "Future.Tool+", "Complete alpha options", mode="completion")
+        self.assertIn("COMPLETION_VERIFIED", result.stdout)
+        target = self.home / ".config/zsh/completions/_Future.Tool+"
+        self.assertTrue(target.is_file())
+        self.assertEqual(self.git("show", "--format=", "--name-only", "HEAD").splitlines(),
+                         [".config/zsh/completions/_Future.Tool+"])
+        self.assertEqual(self.git("diff", "--cached", "--binary"), self.unrelated_diff)
+
+    def test_completion_can_edit_a_tracked_handler(self):
+        self.run_cli("completion", "existing-completion", mode="completion")
+        self.assertIn("alpha", (self.home / ".config/zsh/completions/_existing-completion").read_text())
+        self.assertEqual(self.git("diff", "--cached", "--binary"), self.unrelated_diff)
+
+    def test_completion_refuses_untracked_existing_handler(self):
+        target = self.write(".config/zsh/completions/_future-tool", "#compdef future-tool\ncompadd -- preserve\n")
+        result = self.run_cli("completion", "future-tool", "Add completion", success=False, mode="completion")
+        self.assertIn("PREEXISTING_EDIT", result.stderr)
+        self.assertIn("preserve", target.read_text())
+        self.assertFalse((self.root / "pi invocation.json").exists())
+        self.assert_untouched()
+
+    def test_completion_namespace_admits_auth_and_local_command_names(self):
+        self.run_cli("completion", "auth.local-tool", mode="completion")
+        self.assertTrue((self.home / ".config/zsh/completions/_auth.local-tool").is_file())
+
+    def test_completion_requires_exact_registration_and_real_matching(self):
+        for mode, reason in (("completion-wrong-registration", "INVALID_CANDIDATE"),
+                             ("completion-failed-match", "BEHAVIOR_FAILED"),
+                             ("completion-missing-check", "INVALID_PROPOSAL"),
+                             ("completion-arbitrary-shell", "INVALID_PROPOSAL")):
+            with self.subTest(mode=mode):
+                result = self.run_cli("completion", "future-tool", success=False, mode=mode)
+                self.assertIn(reason, result.stderr)
+                self.assertFalse((self.home / ".config/zsh/completions/_future-tool").exists())
+                self.assert_untouched()
+
+    def test_completion_words_and_prefix_are_real_native_context(self):
+        self.run_cli("completion", "future-tool", mode="completion-context")
+        self.assertTrue((self.home / ".config/zsh/completions/_future-tool").exists())
+
+    def test_completion_query_only_compadd_calls_are_not_offered_candidates(self):
+        for flag in ("A", "O", "D"):
+            with self.subTest(flag=flag):
+                fixture = ConfigureTest()
+                fixture.setUp()
+                try:
+                    result = fixture.run_cli("completion", "future-tool", mode="completion-query-" + flag, success=False)
+                    self.assertIn("BEHAVIOR_FAILED", result.stderr)
+                    self.assertFalse((fixture.home / ".config/zsh/completions/_future-tool").exists())
+                    fixture.assert_untouched()
+                finally:
+                    fixture.doCleanups()
+
 
 FAKE_PI = r'''#!/usr/bin/env python3
 import json, os
@@ -464,7 +520,23 @@ root = Path.cwd()
 Path(os.environ["CONFIG_FIXTURE_LOG"]).write_text(json.dumps({"cwd": str(root), "args": sys.argv[1:]}))
 mode = os.environ["CONFIG_FIXTURE_MODE"]
 if mode == "no-proposal": sys.exit(0)
-if mode in ("change", "bad-toml", "index-drift", "ref-drift", "live-drift", "unlisted-deletion"):
+if mode.startswith("completion"):
+    request = json.loads((root / "request.json").read_text())
+    command = request["intent"]["command"]
+    path = ".config/zsh/completions/_" + command
+    content = "#compdef " + command + "\ncompadd -- alpha alpine bravo\n"
+    checks = [{"type": "COMPLETION_SMOKE", "path": path, "args": [], "prefix": "al",
+               "expect": {"type": "CANDIDATES", "contains": ["alpha", "alpine"], "excludes": ["bravo"]}}]
+    if mode == "completion-context":
+        content = "#compdef " + command + '\nif [[ ${words[2]-} == group ]]; then\ncompadd -- alpha alpine\nelse\ncompadd -- wrong\nfi\n'
+        checks[0]["args"] = ["group"]
+    if mode.startswith("completion-query-"):
+        content = "#compdef " + command + '\nlocal -a queried\ncompadd -' + mode[-1] + ' queried -- alpha alpine bravo\n'
+    if mode == "completion-wrong-registration": content = "#compdef wrong\ncompadd -- alpha alpine\n"
+    if mode == "completion-failed-match": checks[0]["expect"]["contains"] = ["missing"]
+    if mode == "completion-missing-check": checks = []
+    if mode == "completion-arbitrary-shell": checks[0]["shell"] = "touch arbitrary"
+elif mode in ("change", "bad-toml", "index-drift", "ref-drift", "live-drift", "unlisted-deletion"):
     path = ".config/starship.toml"
     content = 'add_newline = false\n'
     checks = []
