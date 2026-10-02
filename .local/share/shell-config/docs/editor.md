@@ -43,8 +43,9 @@ and diagnostics, inspect `:lsp` and `:checkhealth editor`.
 
 Yazi keeps its native keymap. Launch it with the shell's `y` wrapper to return
 to the selected directory on `q`; use `Q` to quit while preserving the shell
-directory. Press `F1` or `~` for help. `s` searches filenames with fd, `S`
-searches contents with ripgrep, `z` opens fzf navigation, and `Z` opens zoxide
+directory. Press `F1` or `~` for help; `Ctrl-C` closes the help menu. `s` searches
+filenames with fd, `S` searches contents with ripgrep, `z` opens fzf navigation,
+and `Z` opens zoxide
 navigation. `?` finds the previous filename match. Open files with Enter and
 choose an opener with `O`.
 
@@ -72,4 +73,5 @@ Sources: [FFF](https://github.com/dmtrKovalenko/fff#fffnvim),
 [ty](https://docs.astral.sh/ty/editors/#neovim),
 [Ruff](https://docs.astral.sh/ruff/editors/setup/#neovim),
 [Biome](https://biomejs.dev/editors/third-party-extensions/),
-[Yazi](https://yazi-rs.github.io/docs/quick-start/).
+[Yazi](https://yazi-rs.github.io/docs/quick-start/),
+[Yazi keymap](https://github.com/sxyazi/yazi/blob/v26.9.1/yazi-config/preset/keymap-default.toml#L332-L337).

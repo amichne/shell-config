@@ -11,7 +11,19 @@ M.spec = {
   {
     'folke/which-key.nvim', commit = '3aab2147e74890957785941f0c1ad87d0a44c15a', lazy = false,
     opts = {
-      preset = 'modern', delay = 250, icons = { mappings = false },
+      preset = 'modern', delay = 250,
+      icons = {
+        mappings = false,
+        keys = {
+          Up = 'Up', Down = 'Down', Left = 'Left', Right = 'Right',
+          C = 'Ctrl-', M = 'Alt-', D = 'Cmd-', S = 'Shift-',
+          CR = 'Enter', Esc = 'Esc', NL = 'Enter', BS = 'Backspace',
+          Space = 'Space ', Tab = 'Tab',
+          ScrollWheelDown = 'ScrollDown', ScrollWheelUp = 'ScrollUp',
+          F1 = 'F1', F2 = 'F2', F3 = 'F3', F4 = 'F4', F5 = 'F5', F6 = 'F6',
+          F7 = 'F7', F8 = 'F8', F9 = 'F9', F10 = 'F10', F11 = 'F11', F12 = 'F12',
+        },
+      },
       spec = {
         { '<leader>f', group = 'Find' }, { '<leader>c', group = 'Code' },
         { '<leader>g', group = 'Git and navigation' }, { '<leader>h', group = 'Help' },

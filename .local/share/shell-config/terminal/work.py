@@ -256,22 +256,32 @@ class Action:
     name: str
     description: str
     example: str
+    label: str
 
 
 ACTIONS = (
-    Action("enter", "open", "Open the selected PR or Jira ticket", "work"),
-    Action("r", "review", "Open a PR in an owned detached review worktree", "work review <PR URL> --account <name>"),
-    Action("n", "new", "Create a Jira ticket from a reviewed summary", "work new"),
-    Action("o", "open", "Open the selected PR or Jira ticket", "work"),
-    Action("ctrl-r", "refresh", "Refresh account PRs and assigned Jira tickets", "work list"),
-    Action("?", "help", "Show this shortcut reference", "keys work"),
-    Action("q", "quit", "Leave the work panel", "work"),
+    Action("enter", "open", "Open the selected PR or Jira ticket", "work", "open"),
+    Action("r", "review", "Open a PR in an owned detached review worktree", "work review <PR URL> --account <name>", "review"),
+    Action("n", "new", "Create a Jira ticket from a reviewed summary", "work new", "ticket"),
+    Action("o", "open", "Open the selected PR or Jira ticket", "work", "open"),
+    Action("ctrl-r", "refresh", "Refresh account PRs and assigned Jira tickets", "work list", "refresh"),
+    Action("?", "help", "Show this shortcut reference", "keys work", "help"),
+    Action("q", "quit", "Leave the work panel", "work", "quit"),
 )
 
 
 def shortcuts() -> list[dict[str, str]]:
     return [{"key": action.key, "description": action.description, "example": action.example}
             for action in ACTIONS]
+
+
+def panel_header() -> str:
+    def displayed(name: str) -> str:
+        entries = tuple(action for action in ACTIONS if action.name == name)
+        keys = "/".join({"enter": "Enter", "ctrl-r": "Ctrl-R"}.get(action.key, action.key) for action in entries)
+        return f"{keys} {entries[0].label}"
+    return "\n".join("  ".join(displayed(name) for name in group)
+                     for group in (("open", "review", "new"), ("refresh", "help", "quit")))
 
 
 def clean_environment() -> dict[str, str]:
@@ -1102,15 +1112,15 @@ def panel(config: Config, state: Path, config_path: Path) -> int:
         failures = [f"{source.name}: {source.failure.reason.value}" for source in sources if isinstance(source, SourceFailure)]
         if failures:
             print("; ".join(failures), file=sys.stderr)
-        header = " | ".join(f"{action.key}: {action.name}" for action in ACTIONS)
+        header = panel_header()
         if failures:
             header += "\nUnavailable: " + "; ".join(failures)
         rows = []
         for index, item in enumerate(items):
             if isinstance(item, PrItem):
-                label = f"PR {item.pr.account.name} {item.pr.repository.full_name} #{item.pr.number} [{item.queue.value}] {item.title}"
+                label = f"#{item.pr.number} {item.title}  {item.pr.repository.full_name}  {item.pr.account.name}/{item.queue.value}"
             else:
-                label = f"Jira {item.key} [{item.status}] {item.title}"
+                label = f"{item.key} {item.title}  [{item.status}]"
             rows.append(f"{index}\t{label}")
         with tempfile.TemporaryDirectory(prefix="work-preview-") as temporary:
             data = Path(temporary) / "items.json"
