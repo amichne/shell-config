@@ -22,6 +22,11 @@ gh = "2.100.0"
 uv = "0.12.9"
 eza = "0.23.5"
 
+# Language servers used by pi-lsp: Python (typing + lint/fixes), JS/TS.
+ty = "0.0.83"
+ruff = "0.16.8"
+biome = "2.5.14"
+
 # Match the currently selected local runtime versions. Repositories may override.
 java = "temurin-25.0.2+10.0.LTS"
 node = "26.0.0"

@@ -13,7 +13,7 @@ const configPath=join(process.env.XDG_CONFIG_HOME||join(homedir(),'.config'),'st
 let target;
 try {target=await realpath(configPath);} catch {target=configPath;}
 const settingsFile=join(dirname(target),'prompt.json');
-const sourceBin=join(dirname(dirname(target)),'bin');
+const sourceBin=join(homedir(),'.local/bin');
 const token=randomBytes(24).toString('hex'),digest=s=>createHash('sha256').update(s).digest('hex');
 let applied,writing=false;
 const backupDir=join(process.env.XDG_STATE_HOME||join(homedir(),'.local/state'),'shell-config','prompt-backups');

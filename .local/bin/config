@@ -1,0 +1,3 @@
+#!/bin/sh
+# The HOME worktree is explicit even when called from another repository.
+exec git -C "$HOME" --git-dir="$HOME/.cfg" --work-tree="$HOME" "$@"
