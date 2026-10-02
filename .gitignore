@@ -26,6 +26,8 @@
 !/.config/zsh/
 !/.config/zsh/completions/
 !/.config/zsh/completions/_config
+!/.config/zsh/completions/_port-owner
+!/.config/zsh/completions/_work
 !/.config/zsh/functions/
 !/.config/zsh/functions/f
 !/.config/zsh/functions/p
@@ -38,6 +40,7 @@
 !/.local/bin/config
 !/.local/bin/dotfiles
 !/.local/bin/keys
+!/.local/bin/port-owner
 !/.local/bin/project
 !/.local/bin/prompt-editor
 !/.local/bin/review
@@ -86,6 +89,7 @@
 !/.local/share/shell-config/tests/dotfiles.py
 !/.local/share/shell-config/tests/editor.py
 !/.local/share/shell-config/tests/helpers.py
+!/.local/share/shell-config/tests/work-completion.py
 !/.local/share/shell-config/tests/work.py
 !/.pi/
 !/.pi/agent/

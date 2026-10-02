@@ -1,8 +1,15 @@
 {
   "type": "WORK_CONFIG",
-  "version": 1,
+  "version": 2,
   "accounts": [],
   "repositories": [],
   "jira": {"project": ""},
-  "editor": ["nvim"]
+  "editor": ["nvim"],
+  "profiles": [
+    {"type": "GITHUB_SEARCH", "name": "reviews", "query": "is:pr is:open review-requested:@me", "accounts": []},
+    {"type": "GITHUB_SEARCH", "name": "mine", "query": "is:pr is:open author:@me", "accounts": []},
+    {"type": "GITHUB_SEARCH", "name": "issues", "query": "is:issue is:open assignee:@me", "accounts": []}
+  ],
+  "default_profile": "inbox",
+  "cache": {"type": "GH_API", "ttl_seconds": 60}
 }

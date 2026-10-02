@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 import json
 import os
@@ -11,6 +12,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -50,6 +52,17 @@ class Reason(Enum):
     REMOVE_UNVERIFIED = "REMOVE_UNVERIFIED"
     TTY_REQUIRED = "TTY_REQUIRED"
     INPUT_REQUIRED = "INPUT_REQUIRED"
+    PROFILE_UNKNOWN = "PROFILE_UNKNOWN"
+    PROFILE_EXISTS = "PROFILE_EXISTS"
+    PROFILE_CONFLICT = "PROFILE_CONFLICT"
+    CONFIG_CHANGED = "CONFIG_CHANGED"
+    INCOMPLETE_RESULTS = "INCOMPLETE_RESULTS"
+    PROFILE_SAVE_UNVERIFIED = "PROFILE_SAVE_UNVERIFIED"
+    SEARCH_ENVELOPE_INVALID = "SEARCH_ENVELOPE_INVALID"
+    SEARCH_ITEM_INVALID = "SEARCH_ITEM_INVALID"
+    SEARCH_REFERENCE_INVALID = "SEARCH_REFERENCE_INVALID"
+    SEARCH_TIMESTAMP_INVALID = "SEARCH_TIMESTAMP_INVALID"
+    SEARCH_DRAFT_UNVERIFIED = "SEARCH_DRAFT_UNVERIFIED"
 
 
 @dataclass(frozen=True)
@@ -98,16 +111,81 @@ class Mapping:
 
 
 @dataclass(frozen=True)
+class ProfileName:
+    value: str
+
+
+@dataclass(frozen=True)
+class SearchQuery:
+    value: str
+
+
+@dataclass(frozen=True)
+class InboxProfile:
+    name: ProfileName = ProfileName("inbox")
+
+
+@dataclass(frozen=True)
+class SearchProfile:
+    name: ProfileName
+    query: SearchQuery
+    accounts: tuple[str, ...]
+
+
+Profile = InboxProfile | SearchProfile
+INBOX = InboxProfile()
+WORK_COMMANDS = frozenset({"list", "accounts", "setup", "new", "review", "cleanup", "profiles", "_preview"})
+
+
+@dataclass(frozen=True)
+class CacheDisabled:
+    pass
+
+
+@dataclass(frozen=True)
+class CacheDuration:
+    seconds: int
+
+
+@dataclass(frozen=True)
+class GhApiCache:
+    duration: CacheDuration
+
+
+CachePolicy = CacheDisabled | GhApiCache
+DEFAULT_CACHE = GhApiCache(CacheDuration(60))
+
+
+class ReadMode(Enum):
+    ALLOW_CACHE = "ALLOW_CACHE"
+    LIVE = "LIVE"
+
+
+@dataclass(frozen=True)
 class Config:
     accounts: tuple[Account, ...]
     repositories: tuple[Mapping, ...]
     project: str
     editor: tuple[str, ...]
+    profiles: tuple[SearchProfile, ...]
+    default_profile: ProfileName
+    cache: CachePolicy
 
 
 class Queue(Enum):
     AUTHORED = "authored"
     REVIEW_REQUESTED = "review_requested"
+    FILTERED = "filtered"
+
+
+class SearchState(Enum):
+    OPEN = "OPEN"
+    CLOSED = "CLOSED"
+
+
+@dataclass(frozen=True)
+class UpdatedAt:
+    value: str
 
 
 class CheckState(Enum):
@@ -141,6 +219,27 @@ class PrItem:
     title: str
     queue: Queue
     draft: bool
+    state: SearchState
+    updated: UpdatedAt
+
+
+@dataclass(frozen=True)
+class GithubIssue:
+    account: Account
+    repository: Repository
+    number: int
+
+    @property
+    def url(self) -> str:
+        return f"https://{self.repository.hostname.value}/{self.repository.full_name}/issues/{self.number}"
+
+
+@dataclass(frozen=True)
+class IssueItem:
+    issue: GithubIssue
+    title: str
+    state: SearchState
+    updated: UpdatedAt
 
 
 @dataclass(frozen=True)
@@ -177,13 +276,40 @@ class CreatedTicket:
     link: TicketLink | NoTicketLink
 
 
-Item = PrItem | JiraItem
+Item = PrItem | IssueItem | JiraItem
+
+
+@dataclass(frozen=True)
+class CompleteMatches:
+    total: int
+
+
+@dataclass(frozen=True)
+class LimitedMatches:
+    total: int
+    returned: int
+    limit: int
+
+
+@dataclass(frozen=True)
+class ProviderLimit:
+    limit: int
+
+
+Coverage = CompleteMatches | LimitedMatches | ProviderLimit
+
+
+@dataclass(frozen=True)
+class SearchPage:
+    items: tuple[PrItem | IssueItem, ...]
+    coverage: CompleteMatches | LimitedMatches
 
 
 @dataclass(frozen=True)
 class SourceSuccess:
     name: str
     items: tuple[Item, ...]
+    coverage: Coverage
 
 
 @dataclass(frozen=True)
@@ -338,7 +464,7 @@ def account(value: object) -> Account | Failure:
     host = hostname(value["hostname"])
     if isinstance(host, Failure) or not isinstance(value["name"], str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,99}", value["name"]):
         return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
-    if not isinstance(value["login"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,99}", value["login"]):
+    if not isinstance(value["login"], str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_-]{0,99}", value["login"]):
         return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
     return Account(value["name"], host, value["login"])
 
@@ -352,9 +478,66 @@ def repository(host: Hostname, full_name: object) -> Repository | Failure:
     return Repository(host, owner, name)
 
 
-def config_from(value: object) -> Config | Failure:
-    if not isinstance(value, dict) or set(value) != {"type", "version", "accounts", "repositories", "jira", "editor"} or value["type"] != "WORK_CONFIG" or type(value["version"]) is not int or value["version"] != 1:
+def canonical_config(value: object) -> dict | Failure:
+    base = {"type", "version", "accounts", "repositories", "jira", "editor"}
+    if not isinstance(value, dict) or value.get("type") != "WORK_CONFIG" or type(value.get("version")) is not int:
         return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
+    if value["version"] == 1 and set(value) == base:
+        return {**value, "version": 2, "profiles": [], "default_profile": "inbox",
+                "cache": {"type": "GH_API", "ttl_seconds": 60}}
+    if value["version"] == 2 and set(value) == base | {"profiles", "default_profile", "cache"}:
+        return dict(value)
+    return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
+
+
+def profile_name(value: object) -> ProfileName | Failure:
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", value) or value in WORK_COMMANDS:
+        return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
+    return ProfileName(value)
+
+
+def profile_from(value: object) -> SearchProfile | Failure:
+    if not isinstance(value, dict) or set(value) != {"type", "name", "query", "accounts"} or value["type"] != "GITHUB_SEARCH":
+        return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
+    name = profile_name(value["name"])
+    if isinstance(name, Failure) or name == INBOX.name or not text(value["query"], 2048) or not value["query"].strip():
+        return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
+    selectors = value["accounts"]
+    if not isinstance(selectors, list) or len(selectors) > 32 or any(not isinstance(entry, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,99}", entry) for entry in selectors) or len(set(selectors)) != len(selectors):
+        return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
+    return SearchProfile(name, SearchQuery(value["query"]), tuple(selectors))
+
+
+def profile_json(profile: Profile) -> dict:
+    match profile:
+        case InboxProfile(name):
+            return {"type": "INBOX", "name": name.value}
+        case SearchProfile(name, query, selectors):
+            return {"type": "GITHUB_SEARCH", "name": name.value, "query": query.value, "accounts": list(selectors)}
+
+
+def profiles_for(config: Config) -> tuple[Profile, ...]:
+    return (INBOX, *config.profiles)
+
+
+def selected_profile(config: Config, name: str | None) -> Profile | Failure:
+    selected = config.default_profile.value if name is None else name
+    return next((entry for entry in profiles_for(config) if entry.name.value == selected),
+                Failure(Stage.CONFIG, Reason.PROFILE_UNKNOWN))
+
+
+def cache_from(value: object) -> CachePolicy | Failure:
+    if isinstance(value, dict) and value == {"type": "DISABLED"}:
+        return CacheDisabled()
+    if not isinstance(value, dict) or set(value) != {"type", "ttl_seconds"} or value["type"] != "GH_API" or type(value["ttl_seconds"]) is not int or not 1 <= value["ttl_seconds"] <= 3600:
+        return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
+    return GhApiCache(CacheDuration(value["ttl_seconds"]))
+
+
+def config_from(raw: object) -> Config | Failure:
+    value = canonical_config(raw)
+    if isinstance(value, Failure):
+        return value
     if not isinstance(value["accounts"], list) or not isinstance(value["repositories"], list):
         return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
     accounts = tuple(account(entry) for entry in value["accounts"])
@@ -384,7 +567,18 @@ def config_from(value: object) -> Config | Failure:
     editor = value["editor"]
     if not isinstance(editor, list) or not editor or not all(text(part, 4096) for part in editor):
         return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
-    return Config(accounts, tuple(mappings), jira["project"], tuple(editor))
+    if not isinstance(value["profiles"], list) or len(value["profiles"]) > 64:
+        return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
+    profiles = tuple(profile_from(entry) for entry in value["profiles"])
+    default = profile_name(value["default_profile"])
+    cache = cache_from(value["cache"])
+    if any(isinstance(entry, Failure) for entry in profiles) or isinstance(default, Failure) or isinstance(cache, Failure):
+        return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
+    if len({entry.name for entry in profiles}) != len(profiles) or default not in {INBOX.name, *(entry.name for entry in profiles)}:
+        return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
+    if accounts and any(selector not in {entry.name for entry in accounts} for profile in profiles for selector in profile.accounts):
+        return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
+    return Config(accounts, tuple(mappings), jira["project"], tuple(editor), profiles, default, cache)
 
 
 def read_json(path: Path, stage: Stage) -> object | Failure:
@@ -408,9 +602,9 @@ def load_config(path: Path) -> Config | Failure:
         overlay = read_json(local, Stage.CONFIG)
         if isinstance(overlay, Failure):
             return overlay
-        if not isinstance(overlay, dict) or overlay.get("type") != "WORK_CONFIG_LOCAL" or not set(overlay).issubset({"type", "accounts", "repositories", "jira"}):
+        if not isinstance(overlay, dict) or overlay.get("type") != "WORK_CONFIG_LOCAL" or not set(overlay).issubset({"type", "accounts", "repositories", "jira", "profiles", "default_profile", "cache"}):
             return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
-        value = {**value, **{key: data for key, data in overlay.items() if key != "type"}}
+        value = {**canonical_config(value), **{key: data for key, data in overlay.items() if key != "type"}}
         return config_from(value)
     return checked
 
@@ -485,24 +679,72 @@ def parse_pr_url(value: str) -> tuple[Repository, int] | Failure:
     return repo, int(match[3])
 
 
-def pr_items(raw: str, selected: Account, queue: Queue) -> tuple[PrItem, ...] | Failure:
+def parse_issue_url(value: str) -> tuple[Repository, int] | Failure:
+    try:
+        url = urlsplit(value)
+    except ValueError:
+        return Failure(Stage.READ, Reason.INVALID_OUTPUT)
+    host = hostname(url.hostname)
+    match = re.fullmatch(r"/([^/]+)/([^/]+)/issues/([1-9][0-9]*)/?", url.path)
+    if isinstance(host, Failure) or url.scheme != "https" or url.netloc != host.value or url.query or url.fragment or not match:
+        return Failure(Stage.READ, Reason.INVALID_OUTPUT)
+    repo = repository(host, f"{match[1]}/{match[2]}")
+    if isinstance(repo, Failure):
+        return Failure(Stage.READ, Reason.INVALID_OUTPUT)
+    return repo, int(match[3])
+
+
+def updated_at(value: object) -> UpdatedAt | Failure:
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z", value):
+        return Failure(Stage.READ, Reason.INVALID_OUTPUT)
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return Failure(Stage.READ, Reason.INVALID_OUTPUT)
+    return UpdatedAt(value)
+
+
+def search_items(raw: str, selected: Account, queue: Queue) -> SearchPage | Failure:
     value = decoded(raw, Stage.READ)
-    if not isinstance(value, list) or len(value) > 50:
-        return Failure(Stage.READ, Reason.INVALID_OUTPUT, selected.name)
+    if isinstance(value, Failure):
+        return Failure(value.stage, value.reason, selected.name)
+    fields = {"total_count", "incomplete_results", "items"}
+    # Older GHES responses omit execution mode. Current REST contracts require
+    # it; only lexical execution preserves this flow's established semantics.
+    if not isinstance(value, dict) or not (set(value) == fields or set(value) == fields | {"search_type"} and value["search_type"] == "lexical"):
+        return Failure(Stage.READ, Reason.SEARCH_ENVELOPE_INVALID, selected.name)
+    if type(value["total_count"]) is not int or value["total_count"] < 0 or type(value["incomplete_results"]) is not bool or not isinstance(value["items"], list) or len(value["items"]) > 50 or len(value["items"]) > value["total_count"]:
+        return Failure(Stage.READ, Reason.SEARCH_ENVELOPE_INVALID, selected.name)
+    if value["incomplete_results"]:
+        return Failure(Stage.READ, Reason.INCOMPLETE_RESULTS, selected.name)
     rows = []
-    fields = {"number", "title", "url", "repository", "updatedAt", "isDraft"}
-    for row in value:
-        if not isinstance(row, dict) or set(row) != fields or type(row["number"]) is not int or row["number"] <= 0 or type(row["isDraft"]) is not bool or not text(row["title"]):
-            return Failure(Stage.READ, Reason.INVALID_OUTPUT, selected.name)
-        nested = row["repository"]
-        if not isinstance(nested, dict):
-            return Failure(Stage.READ, Reason.INVALID_OUTPUT, selected.name)
-        repo = repository(selected.hostname, nested.get("nameWithOwner"))
-        parsed = parse_pr_url(row["url"]) if isinstance(row["url"], str) else Failure(Stage.READ, Reason.INVALID_OUTPUT)
-        if isinstance(repo, Failure) or isinstance(parsed, Failure) or parsed != (repo, row["number"]):
-            return Failure(Stage.READ, Reason.INVALID_OUTPUT, selected.name)
-        rows.append(PrItem(PullRequest(selected, repo, row["number"]), row["title"], queue, row["isDraft"]))
-    return tuple(rows)
+    for row in value["items"]:
+        # GitHub's issue objects are an intentional upstream extension point.
+        # Only required, validated facts enter our closed item representations.
+        if not isinstance(row, dict) or type(row.get("number")) is not int or row["number"] <= 0 or not text(row.get("title")) or not isinstance(row.get("html_url"), str) or row.get("state") not in ("open", "closed"):
+            return Failure(Stage.READ, Reason.SEARCH_ITEM_INVALID, selected.name)
+        updated = updated_at(row.get("updated_at"))
+        is_pr = "pull_request" in row
+        parsed = parse_pr_url(row["html_url"]) if is_pr else parse_issue_url(row["html_url"])
+        if isinstance(updated, Failure):
+            return Failure(Stage.READ, Reason.SEARCH_TIMESTAMP_INVALID, selected.name)
+        if isinstance(parsed, Failure) or parsed[0].hostname != selected.hostname or parsed[1] != row["number"]:
+            return Failure(Stage.READ, Reason.SEARCH_REFERENCE_INVALID, selected.name)
+        repo, number = parsed
+        state = SearchState(row["state"].upper())
+        if is_pr:
+            if not isinstance(row["pull_request"], dict) or row["pull_request"].get("html_url") != row["html_url"]:
+                return Failure(Stage.READ, Reason.SEARCH_REFERENCE_INVALID, selected.name)
+            if type(row.get("draft")) is not bool:
+                return Failure(Stage.READ, Reason.SEARCH_DRAFT_UNVERIFIED, selected.name)
+            rows.append(PrItem(PullRequest(selected, repo, number), row["title"], queue, row["draft"], state, updated))
+        else:
+            if queue != Queue.FILTERED:
+                return Failure(Stage.READ, Reason.SEARCH_ITEM_INVALID, selected.name)
+            rows.append(IssueItem(GithubIssue(selected, repo, number), row["title"], state, updated))
+    total = value["total_count"]
+    coverage = CompleteMatches(total) if total == len(rows) else LimitedMatches(total, len(rows), 50)
+    return SearchPage(tuple(rows), coverage)
 
 
 def jira_items(raw: str) -> tuple[JiraItem, ...] | Failure:
@@ -523,9 +765,14 @@ def jira_items(raw: str) -> tuple[JiraItem, ...] | Failure:
     return tuple(rows)
 
 
-def collect(config: Config) -> tuple[Source, ...]:
+def collect(config: Config, profile: Profile, mode: ReadMode = ReadMode.ALLOW_CACHE) -> tuple[Source, ...]:
     sources: list[Source] = []
     selected = accounts_for(config)
+    if isinstance(selected, tuple) and isinstance(profile, SearchProfile) and profile.accounts:
+        if not set(profile.accounts) <= {entry.name for entry in selected}:
+            selected = Failure(Stage.ACCOUNT, Reason.ACCOUNT_UNKNOWN)
+        else:
+            selected = tuple(entry for entry in selected if entry.name in profile.accounts)
     if isinstance(selected, Failure):
         sources.append(SourceFailure("github", selected))
     else:
@@ -534,29 +781,42 @@ def collect(config: Config) -> tuple[Source, ...]:
             if isinstance(scoped, Failure):
                 sources.append(SourceFailure(identity.name, scoped))
                 continue
-            for queue, flag in ((Queue.AUTHORED, "--author"), (Queue.REVIEW_REQUESTED, "--review-requested")):
-                name = f"{identity.name}:{queue.value}"
-                result = command(["gh", "search", "prs", flag, "@me", "--state", "open", "--limit", "50",
-                                  "--json", "number,title,url,repository,updatedAt,isDraft"], Stage.READ, env=scoped.environment())
-                rows = result if isinstance(result, Failure) else pr_items(result.stdout, identity, queue)
-                sources.append(SourceFailure(name, rows) if isinstance(rows, Failure) else SourceSuccess(name, rows))
+            match profile:
+                case InboxProfile():
+                    searches = ((Queue.AUTHORED, SearchQuery("is:pr is:open author:@me")),
+                                (Queue.REVIEW_REQUESTED, SearchQuery("is:pr is:open review-requested:@me")))
+                case SearchProfile(_, query, _):
+                    searches = ((Queue.FILTERED, query),)
+            for queue, query in searches:
+                name = f"{identity.name}:{queue.value if queue != Queue.FILTERED else profile.name.value}"
+                arguments = ["gh", "api", "search/issues", "--method", "GET", "--hostname", identity.hostname.value,
+                             "-f", "q=" + query.value, "-f", "sort=updated", "-f", "order=desc", "-F", "per_page=50"]
+                if mode == ReadMode.ALLOW_CACHE and isinstance(config.cache, GhApiCache):
+                    arguments.extend(("--cache", f"{config.cache.duration.seconds}s"))
+                result = command(arguments, Stage.READ, env=scoped.environment())
+                page = result if isinstance(result, Failure) else search_items(result.stdout, identity, queue)
+                sources.append(SourceFailure(name, page) if isinstance(page, Failure) else SourceSuccess(name, page.items, page.coverage))
     jql = "assignee = currentUser() AND statusCategory != Done"
     if config.project:
         jql += f' AND project = "{config.project}"'
     result = command(["acli", "jira", "workitem", "search", "--jql", jql + " ORDER BY updated DESC",
                       "--fields", "key,summary,status", "--limit", "50", "--json"], Stage.READ)
     rows = result if isinstance(result, Failure) else jira_items(result.stdout)
-    sources.append(SourceFailure("jira", rows) if isinstance(rows, Failure) else SourceSuccess("jira", rows))
+    sources.append(SourceFailure("jira", rows) if isinstance(rows, Failure) else SourceSuccess("jira", rows, ProviderLimit(50)))
     return tuple(sources)
 
 
 def item_json(item: Item) -> dict:
     match item:
-        case PrItem(pr, title, queue, draft):
+        case PrItem(pr, title, queue, draft, state, updated):
             return {"type": "PULL_REQUEST", "account": pr.account.name, "hostname": pr.account.hostname.value,
                     "repository": pr.repository.full_name, "number": pr.number, "title": title,
                     "url": pr.url, "queue": queue.value, "draft": draft,
-                    "checks": "UNVERIFIED", "review": "UNVERIFIED"}
+                    "checks": "UNVERIFIED", "review": "UNVERIFIED", "state": state.value, "updated_at": updated.value}
+        case IssueItem(issue, title, state, updated):
+            return {"type": "GITHUB_ISSUE", "account": issue.account.name, "hostname": issue.account.hostname.value,
+                    "repository": issue.repository.full_name, "number": issue.number, "title": title,
+                    "url": issue.url, "state": state.value, "updated_at": updated.value}
         case JiraItem(key, title, status):
             return {"type": "JIRA_TICKET", "key": key, "title": title, "status": status}
 
@@ -565,11 +825,22 @@ def failure_json(failure: Failure) -> dict[str, str]:
     return {"type": "WORK_FAILURE", "stage": failure.stage.value, "reason": failure.reason.value, "context": failure.context}
 
 
-def snapshot(sources: tuple[Source, ...]) -> dict:
+def coverage_json(coverage: Coverage) -> dict:
+    match coverage:
+        case CompleteMatches(total):
+            return {"type": "COMPLETE", "total": total}
+        case LimitedMatches(total, returned, limit):
+            return {"type": "LIMITED", "total": total, "returned": returned, "limit": limit}
+        case ProviderLimit(limit):
+            return {"type": "PROVIDER_LIMIT", "limit": limit}
+
+
+def snapshot(sources: tuple[Source, ...], profile: Profile, cache: CachePolicy, mode: ReadMode) -> dict:
     items = [item_json(item) for source in sources if isinstance(source, SourceSuccess) for item in source.items]
-    statuses = [{"type": "SOURCE_SUCCESS", "name": source.name, "count": len(source.items)} if isinstance(source, SourceSuccess)
+    statuses = [{"type": "SOURCE_SUCCESS", "name": source.name, "count": len(source.items), "coverage": coverage_json(source.coverage)} if isinstance(source, SourceSuccess)
                 else {"type": "SOURCE_FAILURE", "name": source.name, "failure": failure_json(source.failure)} for source in sources]
-    return {"type": "WORK_SNAPSHOT", "items": items, "sources": statuses}
+    policy = {"type": "BYPASS"} if mode == ReadMode.LIVE or isinstance(cache, CacheDisabled) else {"type": "GH_API", "ttl_seconds": cache.duration.seconds}
+    return {"type": "WORK_SNAPSHOT", "profile": profile.name.value, "cache": policy, "items": items, "sources": statuses}
 
 
 def report(failure: Failure) -> int:
@@ -578,22 +849,26 @@ def report(failure: Failure) -> int:
     return 1
 
 
-def list_work(config: Config, as_json: bool) -> int:
-    sources = collect(config)
+def list_work(config: Config, profile: Profile, as_json: bool, mode: ReadMode) -> int:
+    sources = collect(config, profile, mode)
     if as_json:
-        print(json.dumps(snapshot(sources)))
+        print(json.dumps(snapshot(sources, profile, config.cache, mode)))
     else:
         for source in sources:
             if isinstance(source, SourceFailure):
                 print(f"! {source.name}: {source.failure.reason.value}")
                 continue
             print(f"{source.name} ({len(source.items)})")
+            if isinstance(source.coverage, LimitedMatches):
+                print(f"  Showing {source.coverage.returned} of {source.coverage.total} matches (limit {source.coverage.limit})")
             for item in source.items:
                 match item:
                     case PrItem(pr, title, queue, draft):
                         print(f"  {pr.repository.full_name} #{pr.number}  {title}")
                     case JiraItem(key, title, status):
                         print(f"  {key} [{status}]  {title}")
+                    case IssueItem(issue, title, state, updated):
+                        print(f"  {issue.repository.full_name} issue #{issue.number} [{state.value}]  {title}")
     return int(any(isinstance(source, SourceFailure) for source in sources))
 
 
@@ -922,6 +1197,205 @@ def accounts_command(config: Config, state: Path, selected: str | None, as_json:
     return 0
 
 
+@dataclass(frozen=True)
+class OverlayAbsent:
+    pass
+
+
+@dataclass(frozen=True)
+class OverlayFile:
+    data: bytes = field(repr=False)
+    mode: int
+    device: int
+    inode: int
+
+
+OverlayState = OverlayAbsent | OverlayFile
+
+
+@dataclass(frozen=True)
+class RegisterProfile:
+    profile: SearchProfile
+
+
+@dataclass(frozen=True)
+class ChooseDefaultProfile:
+    name: ProfileName
+
+
+ProfileMutation = RegisterProfile | ChooseDefaultProfile
+
+
+@dataclass(frozen=True)
+class ProfileSaved:
+    name: ProfileName
+
+
+class ProfileWrite(Enum):
+    PREPARING = "PREPARING"
+    PUBLISHING = "PUBLISHING"
+
+
+@dataclass(frozen=True)
+class OwnedProfileLock:
+    descriptor: int
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True)
+class ProfileLockReleased:
+    pass
+
+
+def overlay_state(path: Path) -> OverlayState | Failure:
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid() or info.st_size > 2_000_000:
+            return Failure(Stage.CONFIG, Reason.UNSAFE_PATH)
+        return OverlayFile(path.read_bytes(), stat.S_IMODE(info.st_mode), info.st_dev, info.st_ino)
+    except FileNotFoundError:
+        return OverlayAbsent()
+    except OSError:
+        return Failure(Stage.CONFIG, Reason.IO_FAILED)
+
+
+def release_profile_lock(path: Path, owned: OwnedProfileLock) -> ProfileLockReleased | Failure:
+    try:
+        os.close(owned.descriptor)
+        current = path.lstat()
+        if (current.st_dev, current.st_ino) != (owned.device, owned.inode):
+            return Failure(Stage.CONFIG, Reason.PROFILE_SAVE_UNVERIFIED)
+        path.unlink()
+    except OSError:
+        return Failure(Stage.CONFIG, Reason.PROFILE_SAVE_UNVERIFIED)
+    return ProfileLockReleased()
+
+
+def update_profile(config_path: Path, request: ProfileMutation) -> ProfileSaved | Failure:
+    local = config_path.with_name("config.local.json")
+    rejected = safe_state(local.parent)
+    if rejected:
+        return rejected
+    lock = local.with_name("config.local.json.lock")
+    try:
+        descriptor = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return Failure(Stage.CONFIG, Reason.CONFIG_CHANGED)
+    except OSError:
+        return Failure(Stage.CONFIG, Reason.IO_FAILED)
+    try:
+        info = os.fstat(descriptor)
+    except OSError:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        # Without an inode proof, preserve the lock rather than deleting it.
+        return Failure(Stage.CONFIG, Reason.PROFILE_SAVE_UNVERIFIED)
+    owned = OwnedProfileLock(descriptor, info.st_dev, info.st_ino)
+    try:
+        result = save_profile_locked(config_path, request)
+    except (OSError, UnicodeError):
+        result = Failure(Stage.CONFIG, Reason.PROFILE_SAVE_UNVERIFIED)
+    finally:
+        cleanup = release_profile_lock(lock, owned)
+    return cleanup if isinstance(cleanup, Failure) else result
+
+
+def save_profile_locked(config_path: Path, request: ProfileMutation) -> ProfileSaved | Failure:
+    local = config_path.with_name("config.local.json")
+    temporary = None
+    phase = ProfileWrite.PREPARING
+    try:
+        before = overlay_state(local)
+        base_before = config_path.read_bytes()
+        config = load_config(config_path)
+        if isinstance(before, Failure) or isinstance(config, Failure):
+            return before if isinstance(before, Failure) else config
+        match before:
+            case OverlayAbsent():
+                overlay = {"type": "WORK_CONFIG_LOCAL"}
+            case OverlayFile(data, _, _, _):
+                overlay = decoded(data.decode("utf-8"), Stage.CONFIG)
+        if not isinstance(overlay, dict):
+            return Failure(Stage.CONFIG, Reason.INVALID_CONFIG)
+        match request:
+            case RegisterProfile(proposed):
+                if any(entry.name == proposed.name for entry in profiles_for(config)):
+                    return Failure(Stage.CONFIG, Reason.PROFILE_EXISTS)
+                next_overlay = {**overlay, "profiles": [profile_json(entry) for entry in (*config.profiles, proposed)]}
+                saved_name = proposed.name
+            case ChooseDefaultProfile(name):
+                selected = selected_profile(config, name.value)
+                if isinstance(selected, Failure):
+                    return selected
+                next_overlay = {**overlay, "default_profile": selected.name.value}
+                saved_name = selected.name
+        base = canonical_config(decoded(base_before.decode("utf-8"), Stage.CONFIG))
+        if isinstance(base, Failure):
+            return base
+        checked = config_from({**base, **{key: value for key, value in next_overlay.items() if key != "type"}})
+        if isinstance(checked, Failure):
+            return checked
+        fd, temp_name = tempfile.mkstemp(prefix=".work-profile-", dir=local.parent)
+        temporary = Path(temp_name)
+        with os.fdopen(fd, "w") as output:
+            json.dump(next_overlay, output, indent=2)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        after_bytes = temporary.read_bytes()
+        if overlay_state(local) != before or config_path.read_bytes() != base_before:
+            return Failure(Stage.CONFIG, Reason.CONFIG_CHANGED)
+        phase = ProfileWrite.PUBLISHING
+        os.replace(temporary, local)
+        after = overlay_state(local)
+        if not isinstance(after, OverlayFile) or after.data != after_bytes or after.mode != 0o600:
+            return Failure(Stage.CONFIG, Reason.PROFILE_SAVE_UNVERIFIED)
+    except (OSError, UnicodeError):
+        return Failure(Stage.CONFIG, Reason.PROFILE_SAVE_UNVERIFIED if phase == ProfileWrite.PUBLISHING else Reason.IO_FAILED)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return ProfileSaved(saved_name)
+
+
+def profiles_command(config: Config, config_path: Path, args: argparse.Namespace) -> int:
+    if args.profile_operation:
+        if args.profile_operation == "add":
+            profile = profile_from({"type": "GITHUB_SEARCH", "name": args.name,
+                                    "query": args.query, "accounts": args.account})
+            if isinstance(profile, Failure):
+                return report(profile)
+            request = RegisterProfile(profile)
+        elif args.profile_operation == "default":
+            name = profile_name(args.name)
+            if isinstance(name, Failure):
+                return report(name)
+            request = ChooseDefaultProfile(name)
+        else:
+            return report(Failure(Stage.CONFIG, Reason.INVALID_CONFIG))
+        saved = update_profile(config_path, request)
+        if isinstance(saved, Failure):
+            return report(saved)
+        print(f"{'Registered profile' if isinstance(request, RegisterProfile) else 'Default profile:'} {saved.name.value}")
+        return 0
+    values = [profile_json(entry) for entry in profiles_for(config)]
+    if args.names:
+        for entry in values:
+            print(entry["name"])
+    elif args.json:
+        print(json.dumps({"type": "WORK_PROFILES", "default_profile": config.default_profile.value,
+                          "profiles": values}))
+    else:
+        for entry in profiles_for(config):
+            marker = "*" if entry.name == config.default_profile else " "
+            description = "Open authored PRs and requested reviews" if isinstance(entry, InboxProfile) else entry.query.value
+            print(f"{marker} {entry.name.value:20} {description}")
+    return 0
+
+
 def new_ticket(config: Config, project: str | None, summary: str | None, kind: str, dry_run: bool) -> int:
     project = project or config.project
     interactive = not project or not summary
@@ -1069,8 +1543,36 @@ def preview_item(value: object, config: Config) -> str | Failure:
         if set(value) != {"type", "key", "title", "status"} or not text(value["key"], 100) or not re.fullmatch(r"[A-Z][A-Z0-9_]*-[1-9][0-9]*", value["key"]) or not text(value["title"]) or not text(value["status"], 100):
             return Failure(Stage.PICKER, Reason.INVALID_OUTPUT)
         return f"{value['title']}\n\n{value['key']}\nStatus: {value['status']}\n\no: open in Jira\nn: create a ticket"
-    fields = {"type", "account", "hostname", "repository", "number", "title", "url", "queue", "draft", "checks", "review"}
+    if value.get("type") == "GITHUB_ISSUE":
+        fields = {"type", "account", "hostname", "repository", "number", "title", "url", "state", "updated_at"}
+        if set(value) != fields or type(value["number"]) is not int or not text(value["account"], 100) or not text(value["title"]) or not isinstance(value["state"], str) or value["state"] not in {entry.value for entry in SearchState} or isinstance(updated_at(value["updated_at"]), Failure):
+            return Failure(Stage.PICKER, Reason.INVALID_OUTPUT)
+        identities = accounts_for(config)
+        if isinstance(identities, Failure):
+            return identities
+        selected = next((entry for entry in identities if entry.name == value["account"] and entry.hostname.value == value["hostname"]), None)
+        parsed = parse_issue_url(value["url"]) if isinstance(value["url"], str) else Failure(Stage.PICKER, Reason.INVALID_OUTPUT)
+        if selected is None or isinstance(parsed, Failure) or parsed[0].hostname != selected.hostname or parsed[0].full_name != value["repository"] or parsed[1] != value["number"]:
+            return Failure(Stage.PICKER, Reason.INVALID_OUTPUT)
+        issue = GithubIssue(selected, parsed[0], parsed[1])
+        scoped = verified_gh(selected)
+        if isinstance(scoped, Failure):
+            return scoped
+        result = command(["gh", "issue", "view", str(issue.number), "--repo", issue.repository.gh_name,
+                          "--json", "number,title,url,body,state"], Stage.READ, env=scoped.environment())
+        if isinstance(result, Failure):
+            return result
+        current = decoded(result.stdout, Stage.READ)
+        if not isinstance(current, dict) or set(current) != {"number", "title", "url", "body", "state"} or type(current["number"]) is not int or current["number"] != issue.number or current["url"] != issue.url or not text(current["title"]) or not isinstance(current["body"], str) or not isinstance(current["state"], str) or current["state"] not in {entry.value for entry in SearchState}:
+            return Failure(Stage.READ, Reason.INVALID_OUTPUT)
+        body = "".join(c for c in current["body"][:8000] if ord(c) >= 32 or c in "\n\t")
+        return (f"{current['title']}\n\n{issue.repository.full_name} issue #{issue.number}\n"
+                f"Account: {selected.name} @ {selected.hostname.value}\nState: {current['state']}\n"
+                f"{issue.url}\n\n{body}\n\no: open in browser")
+    fields = {"type", "account", "hostname", "repository", "number", "title", "url", "queue", "draft", "checks", "review", "state", "updated_at"}
     if value.get("type") != "PULL_REQUEST" or set(value) != fields or type(value["number"]) is not int or type(value["draft"]) is not bool or not text(value["account"], 100) or not text(value["title"]) or value["checks"] != "UNVERIFIED" or value["review"] != "UNVERIFIED" or not isinstance(value["queue"], str) or value["queue"] not in {entry.value for entry in Queue}:
+        return Failure(Stage.PICKER, Reason.INVALID_OUTPUT)
+    if not isinstance(value["state"], str) or value["state"] not in {entry.value for entry in SearchState} or isinstance(updated_at(value["updated_at"]), Failure):
         return Failure(Stage.PICKER, Reason.INVALID_OUTPUT)
     identities = accounts_for(config)
     if isinstance(identities, Failure):
@@ -1092,6 +1594,12 @@ def preview_item(value: object, config: Config) -> str | Failure:
 def open_item(item: Item) -> int:
     if isinstance(item, JiraItem):
         result = command(["acli", "jira", "workitem", "view", item.key, "--web"], Stage.PICKER)
+    elif isinstance(item, IssueItem):
+        scoped = verified_gh(item.issue.account)
+        if isinstance(scoped, Failure):
+            return report(scoped)
+        result = command(["gh", "issue", "view", str(item.issue.number), "--repo", item.issue.repository.gh_name, "--web"],
+                         Stage.PICKER, env=scoped.environment())
     else:
         scoped = verified_gh(item.pr.account)
         if isinstance(scoped, Failure):
@@ -1101,24 +1609,31 @@ def open_item(item: Item) -> int:
     return report(result) if isinstance(result, Failure) else 0
 
 
-def panel(config: Config, state: Path, config_path: Path) -> int:
+def panel(config: Config, state: Path, config_path: Path, profile: Profile, mode: ReadMode) -> int:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         return report(Failure(Stage.PICKER, Reason.TTY_REQUIRED))
     if not shutil.which("fzf"):
         return report(Failure(Stage.PICKER, Reason.TOOL_UNAVAILABLE, "fzf"))
     while True:
-        sources = collect(config)
+        sources = collect(config, profile, mode)
         items = tuple(item for source in sources if isinstance(source, SourceSuccess) for item in source.items)
         failures = [f"{source.name}: {source.failure.reason.value}" for source in sources if isinstance(source, SourceFailure)]
         if failures:
             print("; ".join(failures), file=sys.stderr)
-        header = panel_header()
+        freshness = f"GitHub cache ≤{config.cache.duration.seconds}s" if mode == ReadMode.ALLOW_CACHE and isinstance(config.cache, GhApiCache) else "GitHub live"
+        header = f"Profile: {profile.name.value}  {freshness}\n" + panel_header()
+        limited = [f"{source.name}: {source.coverage.returned}/{source.coverage.total} (limit {source.coverage.limit})"
+                   for source in sources if isinstance(source, SourceSuccess) and isinstance(source.coverage, LimitedMatches)]
+        if limited:
+            header += "\n" + "; ".join(limited)
         if failures:
             header += "\nUnavailable: " + "; ".join(failures)
         rows = []
         for index, item in enumerate(items):
             if isinstance(item, PrItem):
                 label = f"#{item.pr.number} {item.title}  {item.pr.repository.full_name}  {item.pr.account.name}/{item.queue.value}"
+            elif isinstance(item, IssueItem):
+                label = f"Issue #{item.issue.number} {item.title}  {item.issue.repository.full_name}  {item.issue.account.name}/{item.state.value}"
             else:
                 label = f"{item.key} {item.title}  [{item.status}]"
             rows.append(f"{index}\t{label}")
@@ -1147,6 +1662,7 @@ def panel(config: Config, state: Path, config_path: Path) -> int:
         elif action == "new":
             new_ticket(config, None, None, "Task", False)
         elif action == "refresh":
+            mode = ReadMode.LIVE
             continue
         elif len(output) > 1:
             selected = output[1].split("\t", 1)[0]
@@ -1186,12 +1702,35 @@ def main(argv: list[str]) -> int:
             return 1
         print(preview[:8000])
         return 0
-    parser = argparse.ArgumentParser(prog="work", description=__doc__)
+    bootstrap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    bootstrap.add_argument("--config", default=str(default_config()))
+    settings, _ = bootstrap.parse_known_args(argv)
+    config_path = Path(settings.config).expanduser().absolute()
+    config = load_config(config_path)
+    if isinstance(config, Failure):
+        return report(config)
+    parser = argparse.ArgumentParser(prog="work", description=__doc__, allow_abbrev=False)
     parser.add_argument("--config", default=str(default_config()))
     parser.add_argument("--state-dir", default=os.environ.get("WORK_STATE_DIR", str(Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "shell-config/work")))
+    parser.add_argument("--profile", dest="profile_option", help="Use a saved GitHub filter profile")
+    parser.add_argument("--refresh", action="store_true", help="Fetch GitHub lists without the native response cache")
     commands = parser.add_subparsers(dest="command")
-    listed = commands.add_parser("list", help="List current-user PRs and assigned Jira tickets")
+    listed = commands.add_parser("list", help="List a GitHub profile and assigned Jira tickets")
+    listed.add_argument("profile", nargs="?")
+    listed.add_argument("--profile", dest="profile_option", default=argparse.SUPPRESS)
+    listed.add_argument("--refresh", action="store_true", default=argparse.SUPPRESS)
     listed.add_argument("--json", action="store_true")
+    profiles = commands.add_parser("profiles", help="List, register, or select the default GitHub filter profile")
+    output_format = profiles.add_mutually_exclusive_group()
+    output_format.add_argument("--names", action="store_true", help="Print local profile names for completion")
+    output_format.add_argument("--json", action="store_true")
+    operations = profiles.add_subparsers(dest="profile_operation")
+    registered = operations.add_parser("add", help="Register a GitHub search in the private overlay")
+    registered.add_argument("name")
+    registered.add_argument("query")
+    registered.add_argument("--account", action="append", default=[], help="Limit to this named account; repeat as needed")
+    default = operations.add_parser("default", help="Choose the implicit profile used by work")
+    default.add_argument("name")
     identities = commands.add_parser("accounts", help="Discover accounts or select a default review account")
     identities.add_argument("name", nargs="?")
     identities.add_argument("--json", action="store_true")
@@ -1209,27 +1748,38 @@ def main(argv: list[str]) -> int:
     reviewed.add_argument("--no-editor", action="store_true")
     removed = commands.add_parser("cleanup", help="Remove an unchanged, clean owned review worktree")
     removed.add_argument("session")
+    for profile in profiles_for(config):
+        picked = commands.add_parser(profile.name.value, help=f"Open the {profile.name.value} profile")
+        picked.add_argument("--profile", dest="profile_option", default=argparse.SUPPRESS)
+        picked.add_argument("--refresh", action="store_true", default=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    config = load_config(Path(args.config).expanduser().absolute())
-    if isinstance(config, Failure):
-        return report(config)
     state = Path(args.state_dir).expanduser().absolute()
     if args.command == "setup":
         print("GitHub: gh auth login --hostname HOST (repeat for each account); work accounts")
         print("Jira Cloud: acli jira auth login --web")
-        print(f"Public config: {args.config}\nLocal account/repository/project overlay: {Path(args.config).with_name('config.local.json')}")
+        print(f"Public config: {config_path}\nLocal account/repository/project/profile overlay: {config_path.with_name('config.local.json')}")
+        print('Profiles: work profiles add NAME "GitHub search query"; work NAME; work profiles default NAME')
         return 0
+    if args.command == "profiles":
+        return profiles_command(config, config_path, args)
     if args.command == "accounts":
         return accounts_command(config, state, args.name, args.json)
-    if args.command == "list":
-        return list_work(config, args.json)
     if args.command == "new":
         return new_ticket(config, args.project, args.summary, args.type, args.dry_run)
     if args.command == "review":
         return review(config, args.target, args.account, args.repo, state, args.json, open_editor=not args.no_editor)
     if args.command == "cleanup":
         return cleanup(state, args.session)
-    return panel(config, state, Path(args.config).expanduser().absolute())
+    explicit = getattr(args, "profile", None) if args.command == "list" else args.command
+    if explicit is not None and args.profile_option is not None and explicit != args.profile_option:
+        return report(Failure(Stage.CONFIG, Reason.PROFILE_CONFLICT))
+    profile = selected_profile(config, explicit if explicit is not None else args.profile_option)
+    if isinstance(profile, Failure):
+        return report(profile)
+    mode = ReadMode.LIVE if args.refresh else ReadMode.ALLOW_CACHE
+    if args.command == "list":
+        return list_work(config, profile, args.json, mode)
+    return panel(config, state, config_path, profile, mode)
 
 
 if __name__ == "__main__":

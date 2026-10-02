@@ -1,0 +1,104 @@
+#compdef work
+
+local curcontext="$curcontext" state line metadata name word
+local -a config_args profiles workflows
+local -a words=("${words[@]}")
+local -i CURRENT=$CURRENT
+local -i index=2 ret=1
+typeset -A opt_args
+
+# Retain an explicit global config path before _arguments changes words.
+# (Q) removes lexical quoting; it never evaluates substitutions or shell code.
+while (( index < CURRENT )); do
+    word=${(Q)words[index]}
+    case $word in
+        --config)
+            (( index + 1 < CURRENT )) || break
+            config_args=(--config "${(Q)words[index+1]}")
+            (( index += 2 ))
+            ;;
+        --config=*)
+            config_args=(--config "${word#--config=}")
+            # A fully quoted joined option is still one literal shell word.
+            # Normalize its option spelling for native _arguments parsing.
+            words[index]=$word
+            (( index++ ))
+            ;;
+        --profile|--state-dir) (( index += 2 )) ;;
+        --profile=*|--state-dir=*|--refresh) (( index++ )) ;;
+        *) break ;;
+    esac
+done
+
+# This command reads local profile metadata only. WORK_CONFIG is inherited.
+if metadata=$(command work "${config_args[@]}" profiles --names 2>/dev/null); then
+    for name in "${(@f)metadata}"; do
+        [[ $name =~ '^[a-z0-9][a-z0-9_-]{0,63}$' ]] && profiles+=("$name")
+    done
+fi
+
+_arguments -C \
+    '--config=[Use another local work configuration]:configuration file:_files' \
+    '--state-dir=[Use another private runtime directory]:directory:_directories' \
+    '--profile=[Open a saved profile]:profile:->profile' \
+    '--refresh[Refresh work items]' \
+    '(- *)--help[Show help]' \
+    '1:profile or command:->first' \
+    '*::arguments:->command' && ret=0
+
+case $state in
+    first)
+        workflows=(
+            'list:List work items'
+            'profiles:List or maintain saved profiles'
+            'accounts:Discover or select accounts'
+            'setup:Show authentication and local configuration guidance'
+            'new:Create a Jira ticket'
+            'review:Open a pull request in an owned worktree'
+            'cleanup:Remove a clean owned review worktree'
+        )
+        _describe 'work command' workflows && ret=0
+        compadd -- "${profiles[@]}" && ret=0
+        ;;
+    profile)
+        compadd -- "${profiles[@]}" && ret=0
+        ;;
+    command)
+        case $line[1] in
+            list)
+                _arguments -C \
+                    '--json[Print structured work items]' \
+                    '--refresh[Refresh work items]' \
+                    '1::profile:->profile' && ret=0
+                [[ $state != profile ]] || { compadd -- "${profiles[@]}" && ret=0; }
+                ;;
+            profiles)
+                _arguments -C \
+                    '--names[Print local profile names only]' \
+                    '1:operation:->profile_action' \
+                    '*::arguments:->profile_arguments' && ret=0
+                case $state in
+                    profile_action)
+                        local -a actions=('add:Save a named query' 'default:Select the default profile')
+                        _describe 'profile operation' actions && ret=0
+                        ;;
+                    profile_arguments)
+                        case $line[1] in
+                            default)
+                                _arguments -C '1:profile:->profile' && ret=0
+                                [[ $state != profile ]] || { compadd -- "${profiles[@]}" && ret=0; }
+                                ;;
+                            add)
+                                _arguments \
+                                    '*--account=[Restrict this profile to a configured account]:account:' \
+                                    '1:new profile name:' \
+                                    '2:query:' && ret=0
+                                ;;
+                        esac
+                        ;;
+                esac
+                ;;
+        esac
+        ;;
+esac
+return ret

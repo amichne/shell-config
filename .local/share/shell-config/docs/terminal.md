@@ -13,7 +13,7 @@ an explicitly set `EDITOR`/`VISUAL` or `.zshrc.local` can choose another editor.
 | `project --list` | Print discovered project/worktree paths |
 | `scratch [name]` | Open a persistent private Markdown note |
 | `scratch --temp` | Open a disposable note removed after the editor exits |
-| `work` | GitHub/Jira queue and review actions |
+| `work [PROFILE]` | GitHub/Jira queue, saved filters, and review actions |
 | `review PR_URL` | Open a PR in an owned detached review worktree |
 | `config shell add "request"` | Pi-assisted reusable helper |
 | `config shell completion COMMAND "request"` | Create or update that command's Zsh completion |

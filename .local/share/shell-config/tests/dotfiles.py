@@ -44,6 +44,7 @@ HOME_SOURCES = (
     ("config/zsh/functions/rr", ".config/zsh/functions/rr"),
     ("config/zsh/functions/f", ".config/zsh/functions/f"),
     ("config/zsh/completions/_config", ".config/zsh/completions/_config"),
+    ("config/zsh/completions/_work", ".config/zsh/completions/_work"),
     ("config/nvim/init.lua", ".config/nvim/init.lua"),
     ("config/nvim/lua/editor/options.lua", ".config/nvim/lua/editor/options.lua"),
     ("config/nvim/lua/editor/keymaps.lua", ".config/nvim/lua/editor/keymaps.lua"),

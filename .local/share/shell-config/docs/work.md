@@ -6,10 +6,84 @@ requests during shell startup. `keys work` lists the same shortcuts used by the
 panel: Enter or `o` opens an item, `r` starts a PR review, `n` creates a Jira
 ticket, Ctrl-R refreshes, `?` shows help, and `q` leaves.
 
+`inbox` remains the implicit default. The supplied `reviews`, `mine`, and `issues`
+profiles select requested reviews, your authored PRs, and assigned GitHub issues.
+Type `work ` and press Tab to page through the available profile names. Completion
+reads local configuration only; it does not authenticate or make API requests.
+
+```sh
+work reviews
+work list issues --json
+work profiles add triage 'repo:org/repo is:open is:pr label:"needs review"'
+work profiles add bugs 'repo:org/repo is:open is:issue label:bug' --account enterprise
+work triage
+work profiles default triage
+work profiles default inbox
+```
+
+Named profiles use ordinary GitHub search queries. Omit `--account` to search all
+configured/discovered accounts; repeat it to select several named accounts.
+`@me` refers to the verified account for each request. `work --profile NAME` and
+`work list NAME` explicitly override the configured default. Jira's assigned
+queue remains present alongside every GitHub profile. GitHub issues open in the
+browser and have live previews; the review action accepts PRs only.
+
+Registration writes `profiles` or `default_profile` to the existing private
+`config.local.json` overlay with mode 0600. It preserves other sections and the
+public config. Duplicate names, unknown accounts/defaults, command-name
+collisions, and unsafe paths fail visibly. Concurrent registrations use an
+exclusive lock and revalidate file preimages before atomic replacement. A
+`PROFILE_SAVE_UNVERIFIED` outcome requires inspecting the overlay before retrying.
+
+## Native GitHub cache and freshness
+
+Lists reuse `gh api --cache 60s`; GitHub CLI owns storage and includes the host,
+account token, and full query in its cache key. No separate object store or
+background synchronizer runs. The panel and JSON identify the selected profile
+and requested cache policy. Identity checks, previews, and review checkout stay
+uncached, so a list entry cannot authorize checkout of an unverified head.
+
+`work --refresh`, `work list --refresh`, and Ctrl-R fetch live lists. Bypassing
+the cache does not replace an older CLI cache entry: a later ordinary launch
+can reuse it until its original TTL expires. The tool does not clear other
+GitHub CLI caches. Cache payloads are private local response data managed by gh.
+
+Version 2 public config adds `profiles`, `default_profile`, and `cache`; exact
+version 1 configurations remain readable with inbox and the 60-second policy.
+Customize the policy in the private overlay:
+
+```json
+{
+  "type": "WORK_CONFIG_LOCAL",
+  "cache": {"type": "GH_API", "ttl_seconds": 120}
+}
+```
+
+TTL accepts 1–3600 seconds. Use `{"type":"DISABLED"}` as the cache value to
+always fetch live. Profiles have this exact shape:
+
+```json
+{
+  "type": "GITHUB_SEARCH",
+  "name": "triage",
+  "query": "repo:org/repo is:open is:pr label:bug",
+  "accounts": []
+}
+```
+
+Profiles in the local overlay replace the public profile list; the built-in
+inbox is always available. Advanced Boolean query syntax depends on the host.
+GitHub App user tokens can require an explicit `is:pr` or `is:issue` qualifier.
+The parser accepts the legacy search envelope and current explicit lexical
+responses; semantic/hybrid modes and unknown envelope fields fail visibly.
+Search contract failures distinguish envelope, item, reference, timestamp,
+and draft evidence without logging response payloads.
+
 PR descriptions, checks, and review decisions load only for the selected preview.
 Unrecognized check states fail visibly; an absent check or review signal remains
 `UNVERIFIED`. The list is limited to 50 results per account and queue, and 50 Jira
-tickets. A failed source stays visible alongside successful sources. `work list
+tickets. GitHub sources expose complete or limited coverage with the provider's
+total count; incomplete API searches fail visibly. A failed source stays visible alongside successful sources. `work list
 --json` exits nonzero if any source failed, even when other sources returned items.
 
 ## Accounts and configuration
@@ -46,6 +120,7 @@ To give accounts stable names and map repositories, create the untracked
 These identities are examples, not configured accounts. The overlay replaces each
 supplied section of the public `WORK_CONFIG` document; unknown fields, duplicate
 account names or identities, and duplicate repository mappings are rejected.
+Logins accept letters, digits, hyphens, and underscores for enterprise identities.
 Tokens are excluded from this contract. The public editor defaults to `nvim`.
 Set `WORK_CONFIG` or use `work --config FILE ...` to select another complete
 configuration. `WORK_STATE_DIR` or `--state-dir` selects another private state root.
@@ -105,7 +180,7 @@ if supplied, its `self` URL must identify that same Jira issue. The tool emits o
 the refined `JIRA_CREATED` result. `CREATE_UNVERIFIED` means creation may have
 happened; inspect Jira before retrying.
 
-JSON list output is a `WORK_SNAPSHOT` with `PULL_REQUEST` or `JIRA_TICKET` items and
+JSON list output is a `WORK_SNAPSHOT` with `PULL_REQUEST`, `GITHUB_ISSUE`, or `JIRA_TICKET` items and
 `SOURCE_SUCCESS` or `SOURCE_FAILURE` records. Failures carry `WORK_FAILURE` data
 with finite `stage`, `reason`, and sanitized `context`; raw provider errors stay
 private. Account output is `WORK_ACCOUNTS`; local selection is
@@ -119,6 +194,7 @@ evidence does not establish live Jira success.
 
 ```sh
 python3 tests/work.py
+python3 tests/work-completion.py
 ```
 
 References: [GitHub CLI environment](https://cli.github.com/manual/gh_help_environment),

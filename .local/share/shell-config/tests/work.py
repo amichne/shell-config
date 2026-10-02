@@ -16,7 +16,7 @@ import json, os, subprocess, sys
 from pathlib import Path
 args = sys.argv[1:]
 if args[:2] == ['auth', 'status']:
-    print(json.dumps({'hosts': {'github.com': [{'login':'alice','active':True,'token':'masked-secret'}, {'login':'bob','active':False}], 'git.example.test':[{'login':'carol','active':True}]}}))
+    print(json.dumps({'hosts': {'github.com': [{'login':os.getenv('DISCOVERED_LOGIN','alice'),'active':True,'token':'masked-secret'}, {'login':'bob','active':False}], 'git.example.test':[{'login':'carol','active':True}]}}))
     raise SystemExit(0)
 if args[:2] == ['auth','token']:
     assert not any(os.getenv(k) for k in ['GH_TOKEN','GITHUB_TOKEN','GH_ENTERPRISE_TOKEN','GITHUB_ENTERPRISE_TOKEN','GH_HOST'])
@@ -35,6 +35,24 @@ with open(os.environ['FIXTURE_LOG'], 'a') as stream:
     stream.write(json.dumps({'args':args,'host':host,'login':login})+'\n')
 if args[:2] == ['api','user']:
     print('wrong-user' if os.getenv('CONFUSED_IDENTITY') else login)
+elif args[:2] == ['api','search/issues']:
+    if os.getenv('GITHUB_UNAVAILABLE'):
+        print(token, file=sys.stderr)
+        raise SystemExit(1)
+    query = next(arg[2:] for arg in args if arg.startswith('q='))
+    n = 2 if 'review-requested:' in query else 1
+    is_issue = 'is:issue' in query
+    row = {'number':n,'title':login+(' issue' if is_issue else ' PR'),
+           'html_url':'https://'+host+'/owner/repo/'+('issues/' if is_issue else 'pull/')+str(n),
+           'updated_at':'2026-10-02T00:00:00Z','state':'open'}
+    if not is_issue:
+        row.update({'draft':False,'pull_request':{'html_url':row['html_url']}})
+    if os.getenv('INVALID_SEARCH_URL'): row['html_url']='https://another.test/owner/repo/pull/1'
+    if os.getenv('MISSING_SEARCH_DRAFT'): row.pop('draft',None)
+    payload={'total_count':int(os.getenv('SEARCH_TOTAL','1')),
+             'incomplete_results':bool(os.getenv('INCOMPLETE_SEARCH')), 'items':[row]}
+    if os.getenv('SEARCH_TYPE'): payload['search_type']=os.environ['SEARCH_TYPE']
+    print(json.dumps(payload))
 elif args[:2] == ['search','prs']:
     if os.getenv('GITHUB_UNAVAILABLE'):
         print(token, file=sys.stderr)
@@ -52,6 +70,9 @@ elif args[:2] == ['pr','checkout']:
     assert '--detach' in args and '--force' not in args
     path = args[args.index('--worktree')+1]
     subprocess.run(['git','worktree','add','--detach',path,os.environ['FIXTURE_HEAD']], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+elif args[:2] == ['issue','view']:
+    print(json.dumps({'number':1,'title':'A tracked issue','url':'https://'+host+'/owner/repo/issues/1',
+                      'body':'A bounded issue description','state':'OPEN'}))
 else:
     raise SystemExit('Unexpected fixture gh command')
 '''
@@ -121,6 +142,15 @@ class WorkTest(unittest.TestCase):
             'repositories':[{'hostname':'github.com','owner':'owner','name':'repo','path':str(self.repo)}],
             'jira':{'project':'TEAM'},'editor':['fixture-editor']}))
 
+    def profiles_config(self, profiles=None, default='inbox', cache=None):
+        value=json.loads(self.config.read_text())
+        value.update({'version':2,'profiles':profiles or [],'default_profile':default,
+                      'cache':cache or {'type':'GH_API','ttl_seconds':60}})
+        self.config.write_text(json.dumps(value))
+
+    def profile(self, name='triage', query='repo:owner/repo is:open is:issue label:bug', accounts=None):
+        return {'type':'GITHUB_SEARCH','name':name,'query':query,'accounts':accounts or ['enterprise']}
+
     def git(self,path,*args):
         run = subprocess.run(['git','-C',str(path),*args],env=self.env,text=True,capture_output=True)
         self.assertEqual(run.returncode,0,run.stderr)
@@ -163,13 +193,183 @@ class WorkTest(unittest.TestCase):
         run = self.cli('list','--json',expected=None,extra={'CONFUSED_IDENTITY':'1'})
         self.assertIn('IDENTITY_MISMATCH',run.stdout+run.stderr)
         calls = [json.loads(line) for line in (self.root/'commands.jsonl').read_text().splitlines()]
-        self.assertFalse(any(call['args'][:2]==['search','prs'] for call in calls))
+        self.assertFalse(any(call['args'][:2] in (['search','prs'],['api','search/issues']) for call in calls))
 
     def test_accounts_only_prints_safe_identity_fields(self):
         self.write_config([])
         payload = json.loads(self.cli('accounts','--json').stdout)
         self.assertEqual(len(payload['accounts']),3)
         self.assertNotIn('masked-secret',json.dumps(payload))
+
+    def test_underscore_login_is_supported_in_config_and_discovery(self):
+        self.write_config([{'name':'enterprise','hostname':'git.example.test','login':'first_last'}])
+        payload=json.loads(self.cli('list','--json').stdout)
+        self.assertEqual({row['account'] for row in payload['items'] if row['type']=='PULL_REQUEST'},{'enterprise'})
+        calls=[json.loads(line) for line in (self.root/'commands.jsonl').read_text().splitlines()]
+        self.assertEqual({row['login'] for row in calls},{'first_last'})
+        self.write_config([])
+        accounts=json.loads(self.cli('accounts','--json',extra={'DISCOVERED_LOGIN':'first_last'}).stdout)
+        self.assertIn('first_last',{row['login'] for row in accounts['accounts']})
+
+    def test_default_and_explicit_profiles_select_the_right_set(self):
+        self.profiles_config([self.profile()],default='triage')
+        selected=json.loads(self.cli('list','--json').stdout)
+        self.assertEqual(selected['profile'],'triage')
+        github=[row for row in selected['items'] if row['type']!='JIRA_TICKET']
+        self.assertEqual([row['type'] for row in github],['GITHUB_ISSUE'])
+        self.assertEqual(github[0]['account'],'enterprise')
+        inbox=json.loads(self.cli('list','inbox','--json').stdout)
+        self.assertEqual(inbox['profile'],'inbox')
+        self.assertEqual({row['queue'] for row in inbox['items'] if row['type']=='PULL_REQUEST'},
+                         {'authored','review_requested'})
+        self.cli('triage','--help')
+
+    def test_profiles_metadata_and_registration_are_local_and_private(self):
+        self.profiles_config()
+        public_before=self.config.read_bytes()
+        self.cli('profiles','add','triage','repo:owner/repo is:issue is:open','--account','enterprise')
+        names=self.cli('profiles','--names').stdout.splitlines()
+        self.assertEqual(names,['inbox','triage'])
+        self.assertEqual(self.config.read_bytes(),public_before)
+        local=self.config.with_name('config.local.json')
+        self.assertEqual(local.stat().st_mode&0o777,0o600)
+        self.assertEqual(json.loads(local.read_text())['profiles'][0]['name'],'triage')
+        self.cli('profiles','default','triage')
+        listed=json.loads(self.cli('profiles','--json').stdout)
+        self.assertEqual(listed['default_profile'],'triage')
+        self.assertFalse((self.root/'commands.jsonl').exists(),'profile metadata must not authenticate or search')
+
+    def test_queries_are_literal_and_native_cache_has_an_explicit_refresh(self):
+        query='repo:owner/repo is:pr label:"needs review" updated:>=2026-10-01'
+        self.profiles_config([self.profile(query=query)])
+        self.cli('list','triage','--json')
+        calls=[json.loads(line) for line in (self.root/'commands.jsonl').read_text().splitlines()]
+        searches=[row for row in calls if row['args'][:2]==['api','search/issues']]
+        self.assertEqual(len(searches),1)
+        self.assertIn('q='+query,searches[0]['args'])
+        self.assertIn('60s',searches[0]['args'])
+        self.assertNotIn('--cache',next(row for row in calls if row['args'][:2]==['api','user'])['args'])
+        (self.root/'commands.jsonl').unlink()
+        self.cli('list','triage','--json','--refresh')
+        calls=[json.loads(line) for line in (self.root/'commands.jsonl').read_text().splitlines()]
+        self.assertTrue(any(row['args'][:2]==['api','search/issues'] for row in calls))
+        self.assertFalse(any('--cache' in row['args'] for row in calls))
+
+    def test_incomplete_and_invalid_searches_fail_closed_with_visible_coverage(self):
+        for extra,reason in (({'INCOMPLETE_SEARCH':'1'},'INCOMPLETE_RESULTS'),
+                             ({'INVALID_SEARCH_URL':'1'},'SEARCH_REFERENCE_INVALID'),
+                             ({'MISSING_SEARCH_DRAFT':'1'},'SEARCH_DRAFT_UNVERIFIED')):
+            with self.subTest(extra=extra):
+                run=self.cli('list','--json',extra=extra,expected=None)
+                payload=json.loads(run.stdout)
+                failures=[source for source in payload['sources'] if source['type']=='SOURCE_FAILURE' and source['name']!='jira']
+                self.assertTrue(failures)
+                self.assertTrue(all(source['failure']['reason']==reason for source in failures))
+        limited=json.loads(self.cli('list','--json',extra={'SEARCH_TOTAL':'200'}).stdout)
+        coverage=next(source['coverage'] for source in limited['sources'] if source['name']!='jira')
+        self.assertEqual(coverage,{'type':'LIMITED','total':200,'returned':1,'limit':50})
+
+    def test_legacy_config_reading_does_not_rewrite_it(self):
+        before=self.config.read_bytes()
+        self.assertEqual(self.cli('profiles','--names').stdout.splitlines(),['inbox'])
+        self.assertEqual(self.config.read_bytes(),before)
+        self.assertFalse(self.config.with_name('config.local.json').exists())
+        self.assertFalse((self.root/'commands.jsonl').exists())
+
+    def test_current_lexical_search_envelope_preserves_legacy_results(self):
+        legacy=json.loads(self.cli('list','--json').stdout)
+        current=json.loads(self.cli('list','--json',extra={'SEARCH_TYPE':'lexical'}).stdout)
+        self.assertEqual(current['items'],legacy['items'])
+        self.assertEqual(current['sources'],legacy['sources'])
+        for search_type in ('semantic','hybrid','future'):
+            run=self.cli('list','--json',extra={'SEARCH_TYPE':search_type},expected=None)
+            self.assertIn('SEARCH_ENVELOPE_INVALID',run.stdout)
+
+    def test_invalid_profiles_and_cache_are_rejected_before_network(self):
+        self.profiles_config([self.profile()])
+        valid=json.loads(self.config.read_text())
+        invalid=[]
+        for name in ('list','inbox','bad name'):
+            invalid.append({**valid,'profiles':[self.profile(name=name)]})
+        invalid.extend(({**valid,'profiles':[self.profile(),self.profile()]},
+                        {**valid,'default_profile':'missing'},
+                        {**valid,'profiles':[self.profile(accounts=['missing'])]},
+                        {**valid,'profiles':[self.profile(query='   ')]},
+                        {**valid,'cache':{'type':'GH_API','ttl_seconds':True}},
+                        {**valid,'cache':{'type':'GH_API','ttl_seconds':0}},
+                        {**valid,'cache':{'type':'GH_API','ttl_seconds':3601}},
+                        {**valid,'cache':{'type':'DISABLED','ttl_seconds':60}},
+                        {**valid,'future':True}))
+        for value in invalid:
+            with self.subTest(value=value):
+                self.config.write_text(json.dumps(value))
+                run=self.cli('profiles','--names',expected=None)
+                self.assertIn('INVALID_CONFIG',run.stderr)
+                self.assertNotIn('Traceback',run.stderr)
+                self.assertFalse((self.root/'commands.jsonl').exists())
+
+    def test_unknown_and_conflicting_selection_has_no_provider_calls(self):
+        self.profiles_config([self.profile()])
+        unknown=self.cli('list','missing','--json',expected=None)
+        self.assertIn('PROFILE_UNKNOWN',unknown.stderr)
+        conflict=self.cli('--profile','inbox','list','triage','--json',expected=None)
+        self.assertIn('PROFILE_CONFLICT',conflict.stderr)
+        self.assertFalse((self.root/'commands.jsonl').exists())
+
+    def test_registration_preserves_overlay_and_rejects_duplicate_or_locked_edits(self):
+        local=self.config.with_name('config.local.json')
+        overlay={'type':'WORK_CONFIG_LOCAL','jira':{'project':'OTHER'}}
+        local.write_text(json.dumps(overlay))
+        self.cli('profiles','add','triage','is:pr is:open','--account','enterprise')
+        saved=local.read_bytes()
+        self.assertEqual(json.loads(saved)['jira'],overlay['jira'])
+        duplicate=self.cli('profiles','add','triage','is:issue',expected=None)
+        self.assertIn('PROFILE_EXISTS',duplicate.stderr)
+        self.assertEqual(local.read_bytes(),saved)
+        locked=local.with_name('config.local.json.lock')
+        locked.write_text('Another writer owns this lock')
+        run=self.cli('profiles','default','triage',expected=None)
+        self.assertIn('CONFIG_CHANGED',run.stderr)
+        self.assertEqual(local.read_bytes(),saved)
+        self.assertEqual(locked.read_text(),'Another writer owns this lock')
+
+    def test_cache_can_be_disabled_without_affecting_identity_checks(self):
+        self.profiles_config(cache={'type':'DISABLED'})
+        listing=json.loads(self.cli('list','--json').stdout)
+        self.assertEqual(listing['cache'],{'type':'BYPASS'})
+        calls=[json.loads(line) for line in (self.root/'commands.jsonl').read_text().splitlines()]
+        self.assertTrue(any(row['args'][:2]==['api','search/issues'] for row in calls))
+        self.assertFalse(any('--cache' in row['args'] for row in calls))
+
+    def test_issue_preview_open_and_review_keep_entity_boundaries(self):
+        self.profiles_config([self.profile()],default='triage')
+        listing=json.loads(self.cli('list','--json').stdout)
+        data=self.root/'preview.json'
+        data.write_text(json.dumps(listing['items']))
+        preview=subprocess.run([sys.executable,str(CLI),'_preview',str(data),str(self.config),'0'],
+                               env=self.env,text=True,capture_output=True,timeout=15)
+        self.assertEqual(preview.returncode,0,preview.stdout+preview.stderr)
+        self.assertIn('A bounded issue description',preview.stdout)
+        self.assertIn('State: OPEN',preview.stdout)
+        script='''from pathlib import Path
+import sys
+sys.path.insert(0,sys.argv[1])
+import work as w
+c=w.load_config(Path(sys.argv[2]))
+p=w.selected_profile(c,"triage")
+sources=w.collect(c,p)
+item=next(item for source in sources if isinstance(source,w.SourceSuccess) for item in source.items if isinstance(item,w.IssueItem))
+raise SystemExit(w.open_item(item))
+'''
+        opened=subprocess.run([sys.executable,'-c',script,str(CLI.parent),str(self.config)],
+                              env=self.env,text=True,capture_output=True,timeout=15)
+        self.assertEqual(opened.returncode,0,opened.stdout+opened.stderr)
+        rejected=self.cli('review','https://git.example.test/owner/repo/issues/1','--json',expected=None)
+        self.assertIn('INVALID_PR',rejected.stderr)
+        calls=[json.loads(line) for line in (self.root/'commands.jsonl').read_text().splitlines()]
+        self.assertTrue(any(row['args'][:2]==['issue','view'] and '--web' in row['args'] for row in calls))
+        self.assertFalse(any(row['args'][:2]==['pr','checkout'] for row in calls))
+        self.assertFalse(any('--cache' in row['args'] for row in calls if row['args'][:2]==['issue','view']))
 
     def test_review_and_clean_cleanup_use_real_detached_worktree(self):
         reviewed = self.review()
